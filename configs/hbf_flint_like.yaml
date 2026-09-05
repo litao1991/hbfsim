@@ -5,11 +5,13 @@ device:
   stacks: 8
 
 host_interface:
+  full_duplex: true
   channels_per_stack: 4
   bandwidth_per_channel: 375GBps
   fixed_latency_ns: 50
 
 nand:
+  strict_media_validation: true
   dies_per_stack: 16
   planes_per_die: 32
   blocks_per_plane: 256
@@ -46,7 +48,11 @@ nand:
 internal_fabric:
   ports_per_stack: 32
   aggregate_bandwidth: 1TBps
+  port_bandwidth: 64GBps
   fixed_latency_ns: 20
+
+initialization:
+  mode: image_loaded
 
 mapping:
   policy: burst_stripe

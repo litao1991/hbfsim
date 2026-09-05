@@ -1,7 +1,6 @@
 #include "hbfsim/core.h"
 
 #include <algorithm>
-#include <cassert>
 #include <stdexcept>
 
 namespace hbfsim {
@@ -22,14 +21,20 @@ void Simulator::enqueue_subrequest(SubRequest& subrequest) {
   if (config_.multi_plane_enabled && subrequest.op != OpType::Write)
     subrequest.ready_time += config_.multi_plane_setup_ns;
   auto& target = plane(subrequest.paddr);
-  if (subrequest.op == OpType::Read)
+  if (subrequest.op == OpType::Read) {
     target.reads.push_back(subrequest.id);
-  else if (subrequest.op == OpType::Write)
+    ++queue_depth_[0];
+  } else if (subrequest.op == OpType::Write) {
     target.writes.push_back(subrequest.id);
-  else if (subrequest.op == OpType::Erase)
+    ++queue_depth_[1];
+  } else if (subrequest.op == OpType::Erase) {
     target.erases.push_back(subrequest.id);
-  else
+    ++queue_depth_[2];
+  } else {
     target.refreshes.push_back(subrequest.id);
+    ++queue_depth_[3];
+  }
+  record_queue_depth();
   if (subrequest.op == OpType::Read && target.busy)
     try_suspend_for_read(target, now_);
   dispatch_stack(subrequest.paddr.stack, now_);
@@ -131,6 +136,7 @@ bool Simulator::try_resume(Plane& target, SimTime now) {
   sub.array_active_since = now;
   ++active_per_die_.at(die_index);
   ++active_per_stack_.at(sub.paddr.stack);
+  record_queue_depth();
   claim_command(sub, now, false);
   const auto done = now + config_.resume_ns + sub.suspended_remaining_ns;
   sub.array_completion_time = done;
@@ -160,8 +166,11 @@ bool Simulator::try_issue_cached_write(Plane& target, SimTime now) {
     return false;
   }
   target.writes.pop_front();
+  --queue_depth_[1];
+  record_queue_depth();
   target.cached_write = next.id;
   next.issue_time = now;
+  next.latency.nand_queue_wait_ns += now - next.enqueue_time;
   claim_command(next, now, false);
   begin_data_in(next.id, now, true);
   return true;
@@ -265,6 +274,7 @@ void Simulator::release_array(const SubRequest& subrequest) {
                          subrequest.paddr.die;
   --active_per_die_.at(die_index);
   --active_per_stack_.at(subrequest.paddr.stack);
+  record_queue_depth();
 }
 
 void Simulator::begin_data_in(std::uint64_t id, SimTime now, bool cached) {
@@ -273,7 +283,11 @@ void Simulator::begin_data_in(std::uint64_t id, SimTime now, bool cached) {
   target.data_register_busy = true;
   const auto setup = config_.t_adl_ns +
                      (cached ? config_.cache_program_setup_ns : 0);
-  schedule(reserve_fabric(sub.paddr, now + setup, sub.bytes),
+  const auto fabric = reserve_fabric(sub.paddr, now + setup, sub.bytes,
+                                     is_measured(sub.parent_id));
+  sub.latency.fabric_wait_ns += fabric.start - now;
+  sub.latency.fabric_service_ns += fabric.completion - fabric.start;
+  schedule(fabric.completion,
            EventType::NandDataInDone, sub.parent_id, sub.id);
 }
 
@@ -281,24 +295,34 @@ void Simulator::issue(std::uint64_t id, SimTime now, bool shared_command) {
   auto& sub = subrequests_.at(id);
   auto& target = plane(sub.paddr);
   if (sub.op == OpType::Read) {
-    assert(!target.reads.empty() && target.reads.front() == id);
+    if (target.reads.empty() || target.reads.front() != id)
+      throw std::logic_error("read queue invariant violated");
     target.reads.pop_front();
+    --queue_depth_[0];
     ++target.consecutive_reads;
   } else if (sub.op == OpType::Write) {
-    assert(!target.writes.empty() && target.writes.front() == id);
+    if (target.writes.empty() || target.writes.front() != id)
+      throw std::logic_error("write queue invariant violated");
     target.writes.pop_front();
+    --queue_depth_[1];
     target.consecutive_reads = 0;
   } else if (sub.op == OpType::Erase) {
-    assert(!target.erases.empty() && target.erases.front() == id);
+    if (target.erases.empty() || target.erases.front() != id)
+      throw std::logic_error("erase queue invariant violated");
     target.erases.pop_front();
+    --queue_depth_[2];
     target.consecutive_reads = 0;
   } else {
-    assert(!target.refreshes.empty() && target.refreshes.front() == id);
+    if (target.refreshes.empty() || target.refreshes.front() != id)
+      throw std::logic_error("refresh queue invariant violated");
     target.refreshes.pop_front();
+    --queue_depth_[3];
     target.consecutive_reads = 0;
   }
+  record_queue_depth();
   target.busy = true;
   sub.issue_time = now;
+  sub.latency.nand_queue_wait_ns += now - sub.enqueue_time;
   claim_command(sub, now, shared_command);
 
   if (sub.op == OpType::Write) {
@@ -312,12 +336,20 @@ void Simulator::issue(std::uint64_t id, SimTime now, bool shared_command) {
         (block.state == BlockState::Free || block.state == BlockState::Bad ||
          !bitmap_test(block.valid_bitmap, sub.paddr.page)))
       throw std::runtime_error("READ_INVALID_PAGE at plane " +
-                               std::to_string(plane_index(sub.paddr)));
+                               std::to_string(plane_index(sub.paddr)) +
+                               ", block " + std::to_string(sub.paddr.block) +
+                               ", page " + std::to_string(sub.paddr.page) +
+                               ", block_state " +
+                               std::to_string(static_cast<int>(block.state)) +
+                               ", valid " +
+                               std::to_string(bitmap_test(
+                                   block.valid_bitmap, sub.paddr.page)));
     set_transient_page_state(sub.paddr, PageState::Reading);
   } else if (sub.op == OpType::Erase) {
     if (block.bad || block.state == BlockState::Bad ||
         block.state == BlockState::Erasing)
       throw std::runtime_error("ERASE_ON_BAD_OR_ERASING_BLOCK");
+    erased_blocks_.insert(block_key(sub.paddr));
     block.state = BlockState::Erasing;
   } else if (block.bad || block.state == BlockState::Bad ||
              block.state == BlockState::Erasing) {
@@ -329,6 +361,7 @@ void Simulator::issue(std::uint64_t id, SimTime now, bool shared_command) {
                          sub.paddr.die;
   ++active_per_die_.at(die_index);
   ++active_per_stack_.at(sub.paddr.stack);
+  record_queue_depth();
   target.active_subrequest = sub.id;
   sub.array_active_since = now;
   SimTime latency = config_.read_ns;
@@ -350,6 +383,8 @@ void Simulator::issue(std::uint64_t id, SimTime now, bool shared_command) {
 void Simulator::start_program(std::uint64_t id, SimTime now,
                               bool shared_command) {
   auto& sub = subrequests_.at(id);
+  if (now > sub.ready_time)
+    sub.latency.nand_command_wait_ns += now - sub.ready_time;
   sub.old_paddr = mapper_.lookup(sub.lpn);
   const auto old_plane = plane_index(sub.paddr);
   const auto offset = sub.paddr.offset;
@@ -380,6 +415,7 @@ void Simulator::start_program(std::uint64_t id, SimTime now,
                          sub.paddr.die;
   ++active_per_die_.at(die_index);
   ++active_per_stack_.at(sub.paddr.stack);
+  record_queue_depth();
   sub.array_active_since = now;
   const auto done = now + config_.program_ns;
   sub.array_completion_time = done;

@@ -16,6 +16,16 @@ MappingPolicy parse_mapping(const std::string& value) {
   throw std::runtime_error("unknown mapping policy: " + value);
 }
 
+InitializationMode parse_initialization(const std::string& value) {
+  const auto normalized = detail::lower(value);
+  if (normalized == "empty") return InitializationMode::Empty;
+  if (normalized == "image_loaded" || normalized == "image-loaded")
+    return InitializationMode::ImageLoaded;
+  if (normalized == "preconditioned")
+    return InitializationMode::Preconditioned;
+  throw std::runtime_error("unknown initialization mode: " + value);
+}
+
 bool parse_bool(const std::string& value) {
   const auto normalized = detail::lower(detail::trim(value));
   if (normalized == "true" || normalized == "1" || normalized == "yes")
@@ -132,9 +142,13 @@ Config Config::from_yaml_file(const std::string& path) {
   detail::assign_if(values, "internal_fabric.ports_per_stack", config.ports_per_stack, integer);
   detail::assign_if(values, "internal_fabric.fixed_latency_ns", config.internal_fixed_latency_ns, time);
   detail::assign_if(values, "internal_fabric.aggregate_bandwidth", config.internal_bw_bytes_per_ns, parse_bandwidth_bytes_per_ns);
+  detail::assign_if(values, "internal_fabric.port_bandwidth", config.internal_port_bw_bytes_per_ns, parse_bandwidth_bytes_per_ns);
   detail::assign_if(values, "host_interface.channels_per_stack", config.host_channels_per_stack, integer);
   detail::assign_if(values, "host_interface.fixed_latency_ns", config.host_fixed_latency_ns, time);
   detail::assign_if(values, "host_interface.bandwidth_per_channel", config.host_bw_bytes_per_ns, parse_bandwidth_bytes_per_ns);
+  detail::assign_if(values, "host_interface.full_duplex", config.host_full_duplex, parse_bool);
+  if (const auto it = values.find("initialization.mode"); it != values.end())
+    config.initialization_mode = parse_initialization(it->second);
   detail::assign_if(values, "mapping.burst_size", config.burst_size, parse_size);
   if (const auto it = values.find("mapping.policy"); it != values.end()) config.mapping_policy = parse_mapping(it->second);
   detail::assign_if(values, "scheduler.write_starvation_us", config.write_starvation_ns,
@@ -164,7 +178,8 @@ void Config::validate() const {
       host_channels_per_stack == 0 || ports_per_stack == 0 ||
       max_active_planes_per_die == 0 || max_active_planes_per_stack == 0 ||
       max_multi_plane_width == 0 ||
-      host_bw_bytes_per_ns <= 0.0 || internal_bw_bytes_per_ns <= 0.0)
+      host_bw_bytes_per_ns <= 0.0 || internal_bw_bytes_per_ns <= 0.0 ||
+      internal_port_bw_bytes_per_ns <= 0.0)
     throw std::runtime_error("invalid zero-valued HBF topology or link");
   const auto max_u32 = std::numeric_limits<std::uint32_t>::max();
   const std::uint64_t planes_per_stack =

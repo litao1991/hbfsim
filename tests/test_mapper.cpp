@@ -1,6 +1,6 @@
 #include "hbfsim/core.h"
 
-#include <cassert>
+#include "test_support.h"
 #include <set>
 #include <tuple>
 
@@ -20,9 +20,9 @@ int main() {
   const auto first = mapper.map_read(0);
   const auto last = mapper.map_read(511);
   const auto next = mapper.map_read(512);
-  assert(first.die == 0 && first.plane == 0 && first.page == 0);
-  assert(last.die == 15 && last.plane == 31 && last.page == 0);
-  assert(next.die == 0 && next.plane == 0 && next.page == 1);
+  CHECK(first.die == 0 && first.plane == 0 && first.page == 0);
+  CHECK(last.die == 15 && last.plane == 31 && last.page == 0);
+  CHECK(next.die == 0 && next.plane == 0 && next.page == 1);
 
   c.stacks = 2;
   c.dies_per_stack = 1;
@@ -37,8 +37,8 @@ int main() {
   hbfsim::AddressMapper burst_mapper(c);
   std::set<decltype(key(burst_mapper.map_read(0)))> addresses;
   for (std::uint64_t lpn = 0; lpn < 32; ++lpn)
-    assert(addresses.insert(key(burst_mapper.map_read(lpn))).second);
-  assert(burst_mapper.map_read(0).stack == 0);
-  assert(burst_mapper.map_read(2).stack == 1);
-  assert(burst_mapper.map_read(4).plane == 2);
+    CHECK(addresses.insert(key(burst_mapper.map_read(lpn))).second);
+  CHECK(burst_mapper.map_read(0).stack == 0);
+  CHECK(burst_mapper.map_read(2).stack == 1);
+  CHECK(burst_mapper.map_read(4).plane == 2);
 }

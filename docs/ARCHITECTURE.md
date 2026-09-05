@@ -1,4 +1,4 @@
-# HBFSim v0.1 架构设计
+# HBFSim v0.1.1 架构设计
 
 ## 1. 目标与范围
 
@@ -16,18 +16,19 @@ HBFSim 用于回答以下问题：
 
 ```mermaid
 flowchart LR
-    T[CSV Trace] --> TR[TraceReader]
+    T[CSV Trace] --> TR[IRequestSource / CsvTraceSource]
     C[YAML Config] --> CR[Config Parser]
-    TR --> S[Simulator / Event Loop]
+    TR --> S[Simulator Lifecycle]
     CR --> S
     S --> M[AddressMapper]
-    S --> H[Host Link Resources]
+    S --> HR[HostRouter]
+    HR --> H[Full-duplex HostInterface]
     S --> F[Base-Die DataFabric]
     S --> Q[Scheduler]
     Q --> N[NAND State and Events]
     N --> R[ReliabilityModel]
     N --> ST[StatsCollector]
-    ST --> O[summary.csv / plane_utilization.csv]
+    ST --> O[Summary / Breakdown / Occupancy CSVs]
 ```
 
 仿真是单线程确定性执行：所有动作最终转换为带时间戳的 `Event`，进入最小时间优先队列。相同时间戳使用递增的 `seq` 保持稳定顺序。
@@ -37,14 +38,15 @@ flowchart LR
 | 文件 | 职责 |
 |---|---|
 | `src/config.cpp` | YAML 子集解析、单位解析和配置合法性校验 |
-| `src/trace.cpp` | CSV trace 读取和操作类型解析 |
+| `src/trace.cpp` | `IRequestSource` 流式接口、CSV 逐条读取和时间戳校验 |
+| `src/event_queue.cpp` | 确定性事件优先队列 |
 | `src/mapper.cpp` | LPN 到 PPA 的映射、Host-managed frontier 和 L2P 提交 |
-| `src/link.cpp` | Host Link 流水线以及多端口、总带宽受限的 DataFabric |
+| `src/link.cpp` | 独立 Host 路由、全双工 HostInterface、显式端口/总带宽 DataFabric |
 | `src/reliability.cpp` | Program failure、Poisson 位错误、ECC 与 Retry 抽样 |
 | `src/scheduler.cpp` | Plane 队列、ready 判定、读优先、防饥饿、Multi-plane、Cache、Suspend/Resume |
 | `src/events.cpp` | 完成事件、Page/Block 状态迁移、失败处理与统计更新 |
 | `src/simulator.cpp` | 对象构造、请求拆分、资源连接、事件循环和状态查询 |
-| `src/stats.cpp` | 延迟、带宽、goodput、可靠性和 Plane 利用率输出 |
+| `src/stats.cpp` | 固定内存分位数、延迟分解、队列时序和资源占用输出 |
 
 公共数据结构和接口集中在 `include/hbfsim/core.h`。
 
@@ -62,11 +64,11 @@ Device
                 └── Page [pages_per_block]
 ```
 
-PPA 包含 `stack/die/plane/block/page/offset/data_port`。Plane 被展平为全局索引，用于状态数组和利用率统计。
+PPA 包含 `stack/die/plane/block/page/offset/data_port`；独立的 `HostRoute` 包含 `stack/channel`。Host Channel 按逻辑页条带选择，不再由 `data_port` 取模推导。Plane 被展平为全局索引，用于状态数组和利用率统计。
 
 每个层次承担不同约束：
 
-- Host Channel：命令和 Host payload 带宽；
+- Host Channel：可配置共享半双工，或拆分 Command/H2D/D2H 三个方向；
 - DataFabric：Stack 内部总带宽与端口占用；
 - Stack/Die：活跃 Plane 数量上限；
 - Plane：队列、数据寄存器、当前阵列操作和挂起操作；
@@ -74,7 +76,7 @@ PPA 包含 `stack/die/plane/block/page/offset/data_port`。Plane 被展平为全
 
 ## 5. 请求与事件模型
 
-Host 请求先转成 `Request`，再按 Page 边界拆成 `SubRequest`。Erase 和 Refresh 生成一个维护子请求；Read/Write 可生成多个 Page 子请求。
+Host 请求先转成 `Request`，再按 Page 边界拆成 `SubRequest`。`FlashTransaction` 是该结构的显式语义别名。Erase 和 Refresh 生成一个维护事务；Read/Write 可生成多个 Page 事务。
 
 主要事件如下：
 
@@ -182,7 +184,11 @@ Program/Erase active
 - 稳定 Page 状态使用按需分配的位图；
 - `READING/PROGRAMMING` 只保存在全局稀疏瞬态表中；
 - 已完成 Request/SubRequest 会从活动表删除；
+- `CsvTraceSource` 仅保留下一条记录，事件队列只包含到达或在途事件；
+- 延迟分位数使用固定大小对数直方图，不保存全部延迟样本；
 - 该设计避免为完整设备容量创建重量级 Page 对象。
+
+生产执行路径按 `INITIALIZE → WARMUP → MEASURE → DRAIN` 推进。Warmup 请求完成后才读取 Measurement 的第一条 trace；若原始时间戳早于 Warmup 完成时间，Measurement 整体平移，保持请求间隔不变。
 
 ## 9. 扩展接口
 

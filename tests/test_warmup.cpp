@@ -1,6 +1,6 @@
 #include "hbfsim/core.h"
 
-#include <cassert>
+#include "test_support.h"
 
 int main() {
   hbfsim::Config c;
@@ -24,6 +24,6 @@ int main() {
   sim.submit({0, hbfsim::OpType::Read, 0, 4096, 0});
   sim.submit({5, hbfsim::OpType::Read, 4096, 4096, 0});
   sim.run();
-  assert(sim.stats().completed_requests() == 1);
-  assert(sim.stats().mean_latency_ns() > 0.0);
+  CHECK(sim.stats().completed_requests() == 1);
+  CHECK(sim.stats().mean_latency_ns() > 0.0);
 }

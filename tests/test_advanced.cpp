@@ -1,6 +1,6 @@
 #include "hbfsim/core.h"
 
-#include <cassert>
+#include "test_support.h"
 
 namespace {
 
@@ -63,10 +63,10 @@ hbfsim::SimTime extended_timing_run(bool enabled) {
   sim.submit({0, hbfsim::OpType::Write, 0, 100, 0});
   sim.run();
   if (enabled) {
-    assert(sim.page_state({0, 0, 0, 0, 0}) ==
+    CHECK(sim.page_state({0, 0, 0, 0, 0}) ==
            hbfsim::PageState::Valid);
-    assert(sim.block_ready_at({0, 0, 0, 0, 0}) == sim.now() + 5);
-    assert(sim.die_ready_at({0, 0, 0, 0, 0}) == sim.now() + 5);
+    CHECK(sim.block_ready_at({0, 0, 0, 0, 0}) == sim.now() + 5);
+    CHECK(sim.die_ready_at({0, 0, 0, 0, 0}) == sim.now() + 5);
   }
   return sim.now();
 }
@@ -81,9 +81,9 @@ int main() {
     sim.submit({0, hbfsim::OpType::Write, 0, 100, 0});
     sim.submit({100, hbfsim::OpType::Write, 0, 100, 0});
     sim.run();
-    assert(sim.page_state({0, 0, 0, 0, 0}) ==
+    CHECK(sim.page_state({0, 0, 0, 0, 0}) ==
            hbfsim::PageState::Invalid);
-    assert(sim.page_state({0, 0, 0, 0, 1}) ==
+    CHECK(sim.page_state({0, 0, 0, 0, 1}) ==
            hbfsim::PageState::Valid);
   }
 
@@ -92,17 +92,17 @@ int main() {
     hbfsim::Simulator sim(c);
     sim.submit({0, hbfsim::OpType::Write, 0, 100, 0});
     sim.run_until(10);
-    assert(sim.page_state({0, 0, 0, 0, 0}) ==
+    CHECK(sim.page_state({0, 0, 0, 0, 0}) ==
            hbfsim::PageState::Programming);
     sim.run_until(30);
-    assert(sim.page_state({0, 0, 0, 0, 0}) ==
+    CHECK(sim.page_state({0, 0, 0, 0, 0}) ==
            hbfsim::PageState::Valid);
     sim.submit({31, hbfsim::OpType::Read, 0, 100, 0});
     sim.run_until(35);
-    assert(sim.page_state({0, 0, 0, 0, 0}) ==
+    CHECK(sim.page_state({0, 0, 0, 0, 0}) ==
            hbfsim::PageState::Reading);
     sim.run();
-    assert(sim.page_state({0, 0, 0, 0, 0}) ==
+    CHECK(sim.page_state({0, 0, 0, 0, 0}) ==
            hbfsim::PageState::Valid);
   }
 
@@ -112,9 +112,9 @@ int main() {
     hbfsim::Simulator sim(c);
     sim.submit({0, hbfsim::OpType::Write, 0, 100, 0});
     sim.run();
-    assert(sim.stats().program_failures() == 1);
-    assert(sim.stats().failed_requests() == 1);
-    assert(sim.page_state({0, 0, 0, 0, 0}) ==
+    CHECK(sim.stats().program_failures() == 1);
+    CHECK(sim.stats().failed_requests() == 1);
+    CHECK(sim.page_state({0, 0, 0, 0, 0}) ==
            hbfsim::PageState::Failed);
   }
 
@@ -129,10 +129,10 @@ int main() {
     sim.submit({0, hbfsim::OpType::Write, 0, 100, 0});
     sim.submit({100, hbfsim::OpType::Read, 0, 100, 0});
     sim.run();
-    assert(sim.stats().read_retries() == 1);
-    assert(sim.stats().uncorrectable_reads() == 0);
-    assert(sim.stats().failed_requests() == 0);
-    assert(sim.page_state({0, 0, 0, 0, 0}) ==
+    CHECK(sim.stats().read_retries() == 1);
+    CHECK(sim.stats().uncorrectable_reads() == 0);
+    CHECK(sim.stats().failed_requests() == 0);
+    CHECK(sim.page_state({0, 0, 0, 0, 0}) ==
            hbfsim::PageState::Valid);
   }
 
@@ -144,8 +144,8 @@ int main() {
     sim.submit({0, hbfsim::OpType::Write, 0, 100, 0});
     sim.submit({100, hbfsim::OpType::Read, 0, 100, 0});
     sim.run();
-    assert(sim.stats().corrected_reads() == 1);
-    assert(sim.stats().failed_requests() == 0);
+    CHECK(sim.stats().corrected_reads() == 1);
+    CHECK(sim.stats().failed_requests() == 0);
   }
 
   {
@@ -156,15 +156,15 @@ int main() {
     sim.submit({0, hbfsim::OpType::Write, 0, 100, 0});
     sim.submit({100, hbfsim::OpType::Read, 0, 100, 0});
     sim.run();
-    assert(sim.stats().uncorrectable_reads() == 1);
-    assert(sim.stats().failed_requests() == 1);
-    assert(sim.page_state({0, 0, 0, 0, 0}) ==
+    CHECK(sim.stats().uncorrectable_reads() == 1);
+    CHECK(sim.stats().failed_requests() == 1);
+    CHECK(sim.page_state({0, 0, 0, 0, 0}) ==
            hbfsim::PageState::Failed);
   }
 
-  assert(multi_plane_run(true) < multi_plane_run(false));
-  assert(cache_program_run(true) < cache_program_run(false));
-  assert(extended_timing_run(true) > extended_timing_run(false));
+  CHECK(multi_plane_run(true) < multi_plane_run(false));
+  CHECK(cache_program_run(true) < cache_program_run(false));
+  CHECK(extended_timing_run(true) > extended_timing_run(false));
 
   {
     auto c = base_config();
@@ -179,8 +179,8 @@ int main() {
     sim.submit({20, hbfsim::OpType::Write, 0, 100, 0});
     sim.submit({300, hbfsim::OpType::Read, 0, 100, 0});
     sim.run();
-    assert(sim.stats().completed_requests() == 4);
-    assert(sim.page_state({0, 0, 0, 0, 0}) ==
+    CHECK(sim.stats().completed_requests() == 4);
+    CHECK(sim.page_state({0, 0, 0, 0, 0}) ==
            hbfsim::PageState::Valid);
   }
 
@@ -196,11 +196,11 @@ int main() {
     sim.submit({50, hbfsim::OpType::Erase, 0, 0, 0});
     sim.submit({60, hbfsim::OpType::Read, 0, 100, 0});
     sim.run();
-    assert(sim.stats().completed_requests() == 3);
-    assert(sim.stats().failed_requests() == 0);
-    assert(sim.block_state({0, 0, 0, 0, 0}) ==
+    CHECK(sim.stats().completed_requests() == 3);
+    CHECK(sim.stats().failed_requests() == 0);
+    CHECK(sim.block_state({0, 0, 0, 0, 0}) ==
            hbfsim::BlockState::Free);
-    assert(sim.page_state({0, 0, 0, 0, 0}) ==
+    CHECK(sim.page_state({0, 0, 0, 0, 0}) ==
            hbfsim::PageState::Erased);
   }
 }

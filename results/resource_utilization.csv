@@ -1,0 +1,2 @@
+stack,array_only_ns,fabric_only_ns,overlap_ns,idle_ns,array_utilization,fabric_utilization,host_utilization,avg_active_planes,max_active_planes
+0,55866,2886,134,3465,0.898141,0.0484355,0.0446504,18.2515,512

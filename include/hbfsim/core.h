@@ -1,7 +1,9 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <deque>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
@@ -10,6 +12,7 @@
 #include <random>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace hbfsim {
@@ -22,6 +25,9 @@ enum class TransactionSource { User, Mapping, Maintenance, GarbageCollection, Re
 enum class BlockState { Free, Open, Closed, Erasing, Bad };
 enum class PageState { Erased, Reading, Programming, Valid, Invalid, Failed };
 enum class ReadErrorStatus { Clean, Corrected, Uncorrectable };
+enum class InitializationMode { Empty, ImageLoaded, Preconditioned };
+enum class HostLinkDirection { Command, HostToDevice, DeviceToHost };
+enum class SimulationPhase { Initialize, Warmup, Measure, Drain };
 
 std::string to_string(OpType op);
 OpType parse_op(const std::string& value);
@@ -54,6 +60,9 @@ struct Config {
   SimTime internal_fixed_latency_ns = 20;
   double host_bw_bytes_per_ns = 256.0;
   double internal_bw_bytes_per_ns = 1000.0;
+  double internal_port_bw_bytes_per_ns = 1000.0;
+  bool host_full_duplex = true;
+  InitializationMode initialization_mode = InitializationMode::Empty;
   MappingPolicy mapping_policy = MappingPolicy::BurstStripe;
   std::uint64_t burst_size = 2 * 1024 * 1024;
   SimTime write_starvation_ns = 100'000;
@@ -87,6 +96,11 @@ struct PhysicalAddr {
   std::uint32_t data_port = 0;
 };
 
+struct HostRoute {
+  std::uint32_t stack = 0;
+  std::uint32_t channel = 0;
+};
+
 struct Request {
   std::uint64_t id = 0;
   SimTime arrival_time = 0;
@@ -94,9 +108,25 @@ struct Request {
   std::uint64_t logical_addr = 0;
   std::uint64_t size = 0;
   std::uint32_t stream_id = 0;
+  HostRoute host_route;
   std::uint32_t pending_subreqs = 0;
   SimTime complete_time = 0;
+  SimTime host_command_wait_ns = 0;
+  SimTime host_command_service_ns = 0;
+  bool measured = true;
   bool failed = false;
+};
+
+struct LatencyBreakdown {
+  SimTime host_command_wait_ns = 0;
+  SimTime host_command_service_ns = 0;
+  SimTime host_data_wait_ns = 0;
+  SimTime host_data_service_ns = 0;
+  SimTime nand_queue_wait_ns = 0;
+  SimTime nand_command_wait_ns = 0;
+  SimTime array_service_ns = 0;
+  SimTime fabric_wait_ns = 0;
+  SimTime fabric_service_ns = 0;
 };
 
 struct SubRequest {
@@ -117,9 +147,13 @@ struct SubRequest {
   SimTime array_completion_time = 0;
   SimTime suspended_remaining_ns = 0;
   std::uint32_t read_attempts = 0;
+  HostRoute host_route;
+  LatencyBreakdown latency;
   bool suspended = false;
   bool failed = false;
 };
+
+using FlashTransaction = SubRequest;
 
 struct TraceEntry {
   SimTime timestamp_ns;
@@ -129,9 +163,23 @@ struct TraceEntry {
   std::uint32_t stream;
 };
 
-class TraceReader {
+class IRequestSource {
  public:
-  static std::vector<TraceEntry> read_csv(const std::string& path);
+  virtual ~IRequestSource() = default;
+  virtual bool next(TraceEntry& entry) = 0;
+};
+
+class CsvTraceSource final : public IRequestSource {
+ public:
+  explicit CsvTraceSource(const std::string& path);
+  bool next(TraceEntry& entry) override;
+
+ private:
+  std::ifstream input_;
+  std::string path_;
+  std::uint64_t line_number_ = 0;
+  bool first_record_ = true;
+  std::optional<SimTime> previous_timestamp_;
 };
 
 class AddressMapper {
@@ -159,7 +207,16 @@ class LinkResource {
   LinkResource() = default;
   LinkResource(double bytes_per_ns, SimTime fixed_latency_ns)
       : bytes_per_ns_(bytes_per_ns), fixed_latency_ns_(fixed_latency_ns) {}
-  SimTime reserve(SimTime now, std::uint64_t bytes);
+  struct Reservation {
+    SimTime requested_at = 0;
+    SimTime start = 0;
+    SimTime transfer_end = 0;
+    SimTime completion = 0;
+  };
+  Reservation reserve_window(SimTime now, std::uint64_t bytes);
+  SimTime reserve(SimTime now, std::uint64_t bytes) {
+    return reserve_window(now, bytes).completion;
+  }
   SimTime free_at() const { return free_at_; }
 
  private:
@@ -171,8 +228,13 @@ class LinkResource {
 class DataFabric {
  public:
   DataFabric() = default;
-  DataFabric(std::uint32_t ports, double aggregate_bytes_per_ns, SimTime fixed_latency_ns);
-  SimTime reserve(SimTime now, std::uint64_t bytes, std::uint32_t port);
+  DataFabric(std::uint32_t ports, double aggregate_bytes_per_ns,
+             double port_bytes_per_ns, SimTime fixed_latency_ns);
+  LinkResource::Reservation reserve_window(SimTime now, std::uint64_t bytes,
+                                            std::uint32_t port);
+  SimTime reserve(SimTime now, std::uint64_t bytes, std::uint32_t port) {
+    return reserve_window(now, bytes, port).completion;
+  }
 
  private:
   std::vector<SimTime> port_free_at_;
@@ -180,6 +242,36 @@ class DataFabric {
   double aggregate_bytes_per_ns_ = 1.0;
   double port_bytes_per_ns_ = 1.0;
   SimTime fixed_latency_ns_ = 0;
+};
+
+class HostRouter {
+ public:
+  explicit HostRouter(const Config& config) : config_(config) {}
+  HostRoute route(std::uint64_t logical_addr,
+                  const PhysicalAddr& media_address) const;
+
+ private:
+  const Config& config_;
+};
+
+class HostInterface {
+ public:
+  HostInterface() = default;
+  HostInterface(std::uint32_t channels, double bytes_per_ns,
+                SimTime fixed_latency_ns, bool full_duplex);
+  LinkResource::Reservation reserve(const HostRoute& route,
+                                    HostLinkDirection direction,
+                                    SimTime now, std::uint64_t bytes);
+
+ private:
+  struct Channel {
+    LinkResource shared;
+    LinkResource command;
+    LinkResource host_to_device;
+    LinkResource device_to_host;
+  };
+  bool full_duplex_ = true;
+  std::vector<Channel> channels_;
 };
 
 struct ReadErrorResult {
@@ -251,20 +343,65 @@ struct EventCompare {
   }
 };
 
+class EventQueue {
+ public:
+  void schedule(SimTime when, EventType type, std::uint64_t request_id,
+                std::uint64_t subrequest_id = 0);
+  bool empty() const { return events_.empty(); }
+  const Event& next() const { return events_.top(); }
+  Event pop();
+
+ private:
+  std::uint64_t next_sequence_ = 0;
+  std::priority_queue<Event, std::vector<Event>, EventCompare> events_;
+};
+
+class LatencyHistogram {
+ public:
+  void record(SimTime value);
+  std::uint64_t count() const { return count_; }
+  double mean() const;
+  double percentile(double quantile) const;
+
+ private:
+  static constexpr std::size_t kLinearBuckets = 1024;
+  static constexpr std::size_t kSubBuckets = 64;
+  static constexpr std::size_t kExponentBuckets = 54;
+  static constexpr std::size_t kBucketCount =
+      kLinearBuckets + kSubBuckets * kExponentBuckets;
+  std::array<std::uint64_t, kBucketCount> buckets_{};
+  std::uint64_t count_ = 0;
+  long double sum_ = 0;
+};
+
 class StatsCollector {
  public:
   void record_request(const Request& request);
   void record_subrequest(const SubRequest& subrequest);
-  void record_plane_issue(std::uint32_t plane, SimTime start, SimTime end);
+  void record_array_issue(std::uint32_t stack, std::uint32_t die,
+                          std::uint32_t plane, SimTime start, SimTime end);
+  void record_fabric_transfer(std::uint32_t stack, std::uint32_t port,
+                              SimTime start, SimTime end);
+  void record_host_transfer(std::uint32_t stack, std::uint32_t channel,
+                            HostLinkDirection direction, SimTime start,
+                            SimTime end);
+  void record_queue_depth(SimTime time, std::uint64_t reads,
+                          std::uint64_t writes, std::uint64_t erases,
+                          std::uint64_t refreshes,
+                          std::uint64_t active_planes);
   void record_read_retry() { ++read_retries_; }
   void record_corrected_read() { ++corrected_reads_; }
   void record_uncorrectable_read() { ++uncorrectable_reads_; }
   void record_program_failure() { ++program_failures_; }
-  void set_total_planes(std::uint32_t total_planes) { total_planes_ = total_planes; }
+  void set_topology(std::uint32_t stacks, std::uint32_t dies_per_stack,
+                    std::uint32_t planes_per_die,
+                    std::uint32_t ports_per_stack,
+                    std::uint32_t host_channels_per_stack);
   void write(const std::string& output_dir, SimTime makespan) const;
   std::uint64_t completed_requests() const { return completed_requests_; }
   double mean_latency_ns() const;
   double p99_latency_ns() const;
+  double percentile_latency_ns(double quantile) const;
   std::uint64_t failed_requests() const { return failed_requests_; }
   std::uint64_t read_retries() const { return read_retries_; }
   std::uint64_t corrected_reads() const { return corrected_reads_; }
@@ -272,6 +409,15 @@ class StatsCollector {
   std::uint64_t program_failures() const { return program_failures_; }
 
  private:
+  struct Interval { SimTime start = 0; SimTime end = 0; };
+  struct QueueDepthSample {
+    SimTime time = 0;
+    std::uint64_t reads = 0;
+    std::uint64_t writes = 0;
+    std::uint64_t erases = 0;
+    std::uint64_t refreshes = 0;
+    std::uint64_t active_planes = 0;
+  };
   std::uint64_t completed_requests_ = 0;
   std::uint64_t read_requests_ = 0;
   std::uint64_t write_requests_ = 0;
@@ -282,14 +428,26 @@ class StatsCollector {
   std::uint64_t corrected_reads_ = 0;
   std::uint64_t uncorrectable_reads_ = 0;
   std::uint64_t program_failures_ = 0;
-  std::uint32_t total_planes_ = 0;
+  std::uint32_t stacks_ = 0;
+  std::uint32_t dies_per_stack_ = 0;
+  std::uint32_t planes_per_die_ = 0;
+  std::uint32_t ports_per_stack_ = 0;
+  std::uint32_t host_channels_per_stack_ = 0;
   std::optional<SimTime> first_arrival_;
   SimTime last_completion_ = 0;
-  std::vector<SimTime> latencies_;
-  std::vector<SimTime> subrequest_waits_;
-  std::map<OpType, std::vector<SimTime>> op_latencies_;
+  LatencyHistogram latencies_;
+  std::map<OpType, LatencyHistogram> op_latencies_;
   std::map<OpType, std::uint64_t> op_bytes_;
   std::unordered_map<std::uint32_t, SimTime> plane_busy_ns_;
+  std::map<OpType, LatencyBreakdown> latency_breakdown_;
+  std::map<OpType, std::uint64_t> latency_breakdown_samples_;
+  std::vector<std::vector<Interval>> stack_array_intervals_;
+  std::vector<std::vector<Interval>> stack_fabric_intervals_;
+  std::vector<std::vector<Interval>> stack_host_intervals_;
+  std::vector<std::vector<Interval>> die_intervals_;
+  std::vector<std::vector<Interval>> port_intervals_;
+  std::vector<std::vector<Interval>> host_channel_intervals_;
+  std::vector<QueueDepthSample> queue_depth_samples_;
 };
 
 class Simulator {
@@ -297,9 +455,11 @@ class Simulator {
   explicit Simulator(Config config);
   void submit(const TraceEntry& entry);
   void run();
+  void run(IRequestSource& source);
   void run_until(SimTime until);
   const StatsCollector& stats() const { return stats_; }
   SimTime now() const { return now_; }
+  SimulationPhase phase() const { return phase_; }
   PageState page_state(const PhysicalAddr& paddr) const;
   BlockState block_state(const PhysicalAddr& paddr) const;
   SimTime block_ready_at(const PhysicalAddr& paddr) const;
@@ -326,8 +486,13 @@ class Simulator {
   bool try_resume(Plane& plane, SimTime now);
   void release_array(const SubRequest& subrequest);
   void finish_program(SubRequest& subrequest, SimTime now);
-  SimTime reserve_host(const PhysicalAddr& paddr, SimTime now, std::uint64_t bytes);
-  SimTime reserve_fabric(const PhysicalAddr& paddr, SimTime now, std::uint64_t bytes);
+  LinkResource::Reservation reserve_host(const HostRoute& route,
+                                         HostLinkDirection direction,
+                                         SimTime now, std::uint64_t bytes,
+                                         bool measured);
+  LinkResource::Reservation reserve_fabric(const PhysicalAddr& paddr,
+                                           SimTime now, std::uint64_t bytes,
+                                           bool measured);
   void complete_subrequest(std::uint64_t subrequest_id, SimTime now);
   std::uint32_t plane_index(const PhysicalAddr& paddr) const;
   Plane& plane(const PhysicalAddr& paddr);
@@ -338,18 +503,22 @@ class Simulator {
   void claim_command(const SubRequest& subrequest, SimTime now,
                      bool shared_command);
   std::uint64_t page_key(const PhysicalAddr& paddr) const;
+  std::uint64_t block_key(const PhysicalAddr& paddr) const;
   void set_transient_page_state(const PhysicalAddr& paddr, PageState state);
   void clear_transient_page_state(const PhysicalAddr& paddr);
+  void materialize_initialized_page(const PhysicalAddr& paddr);
+  bool is_measured(std::uint64_t request_id) const;
+  void record_queue_depth();
 
   Config config_;
   AddressMapper mapper_;
+  HostRouter host_router_;
   ReliabilityModel reliability_;
   SimTime now_ = 0;
-  std::uint64_t next_event_seq_ = 0;
   std::uint64_t next_request_id_ = 0;
   std::uint64_t next_subrequest_id_ = 0;
   std::uint64_t submitted_requests_ = 0;
-  std::priority_queue<Event, std::vector<Event>, EventCompare> events_;
+  EventQueue event_queue_;
   std::unordered_map<std::uint64_t, Request> requests_;
   std::unordered_map<std::uint64_t, SubRequest> subrequests_;
   std::vector<Plane> planes_;
@@ -359,9 +528,13 @@ class Simulator {
   std::vector<std::uint32_t> dispatch_cursor_per_stack_;
   std::vector<SimTime> dispatch_wake_at_;
   std::vector<std::deque<std::uint64_t>> program_ready_;
-  std::vector<LinkResource> host_links_;
+  std::vector<HostInterface> host_interfaces_;
   std::vector<DataFabric> fabrics_;
   std::unordered_map<std::uint64_t, PageState> transient_page_states_;
+  std::unordered_set<std::uint64_t> erased_blocks_;
+  std::array<std::uint64_t, 4> queue_depth_{};
+  SimulationPhase phase_ = SimulationPhase::Initialize;
+  bool streaming_submission_ = false;
   StatsCollector stats_;
 };
 

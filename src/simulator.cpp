@@ -14,12 +14,19 @@ bool bitmap_test(const std::vector<std::uint64_t>& bitmap,
          (bitmap[word] & (1ULL << (page % 64))) != 0;
 }
 
-
+void bitmap_set(std::vector<std::uint64_t>& bitmap, std::uint32_t pages,
+                std::uint32_t page) {
+  if (bitmap.empty()) bitmap.resize((pages + 63) / 64, 0);
+  bitmap.at(page / 64) |= 1ULL << (page % 64);
+}
 
 }  // namespace
 
 Simulator::Simulator(Config config)
-    : config_(std::move(config)), mapper_(config_), reliability_(config_) {
+    : config_(std::move(config)),
+      mapper_(config_),
+      host_router_(config_),
+      reliability_(config_) {
   config_.validate();
   const auto planes_per_stack =
       static_cast<std::uint64_t>(config_.dies_per_stack) *
@@ -37,26 +44,27 @@ Simulator::Simulator(Config config)
   dispatch_wake_at_.assign(config_.stacks,
                            std::numeric_limits<SimTime>::max());
   program_ready_.resize(config_.stacks);
-  stats_.set_total_planes(static_cast<std::uint32_t>(total_planes));
-
-  host_links_.reserve(static_cast<std::size_t>(config_.stacks) *
+  stats_.set_topology(config_.stacks, config_.dies_per_stack,
+                      config_.planes_per_die, config_.ports_per_stack,
                       config_.host_channels_per_stack);
-  for (std::uint64_t i = 0;
-       i < static_cast<std::uint64_t>(config_.stacks) *
-               config_.host_channels_per_stack;
-       ++i)
-    host_links_.emplace_back(config_.host_bw_bytes_per_ns,
-                             config_.host_fixed_latency_ns);
-  for (std::uint32_t i = 0; i < config_.stacks; ++i)
+
+  host_interfaces_.reserve(config_.stacks);
+  for (std::uint32_t i = 0; i < config_.stacks; ++i) {
+    host_interfaces_.emplace_back(config_.host_channels_per_stack,
+                                  config_.host_bw_bytes_per_ns,
+                                  config_.host_fixed_latency_ns,
+                                  config_.host_full_duplex);
     fabrics_.emplace_back(config_.ports_per_stack,
                           config_.internal_bw_bytes_per_ns,
+                          config_.internal_port_bw_bytes_per_ns,
                           config_.internal_fixed_latency_ns);
+  }
 }
 
 void Simulator::schedule(SimTime when, EventType type,
                          std::uint64_t request_id,
                          std::uint64_t subrequest_id) {
-  events_.push({when, next_event_seq_++, type, request_id, subrequest_id});
+  event_queue_.schedule(when, type, request_id, subrequest_id);
 }
 
 void Simulator::schedule_dispatch_wake(std::uint32_t stack, SimTime when) {
@@ -76,8 +84,16 @@ void Simulator::submit(const TraceEntry& entry) {
   if ((entry.op == OpType::Read || entry.op == OpType::Write) &&
       entry.size == 0)
     throw std::invalid_argument("read/write request size must be non-zero");
-  Request request{next_request_id_++, entry.timestamp_ns, entry.op,
-                  entry.address, entry.size, entry.stream};
+  Request request;
+  request.id = next_request_id_++;
+  request.arrival_time = entry.timestamp_ns;
+  request.op = entry.op;
+  request.logical_addr = entry.address;
+  request.size = entry.size;
+  request.stream_id = entry.stream;
+  request.measured = streaming_submission_
+                         ? phase_ == SimulationPhase::Measure
+                         : request.id >= config_.warmup_requests;
   requests_.emplace(request.id, request);
   ++submitted_requests_;
   schedule(entry.timestamp_ns, EventType::HostArrival, request.id);
@@ -113,6 +129,13 @@ std::uint64_t Simulator::page_key(const PhysicalAddr& address) const {
   key = key * config_.planes_per_die + address.plane;
   key = key * config_.blocks_per_plane + address.block;
   return key * config_.pages_per_block + address.page;
+}
+
+std::uint64_t Simulator::block_key(const PhysicalAddr& address) const {
+  std::uint64_t key = address.stack;
+  key = key * config_.dies_per_stack + address.die;
+  key = key * config_.planes_per_die + address.plane;
+  return key * config_.blocks_per_plane + address.block;
 }
 
 PageState Simulator::page_state(const PhysicalAddr& address) const {
@@ -151,29 +174,44 @@ void Simulator::clear_transient_page_state(const PhysicalAddr& address) {
   transient_page_states_.erase(page_key(address));
 }
 
-SimTime Simulator::reserve_host(const PhysicalAddr& address, SimTime now,
-                                std::uint64_t bytes) {
-  const auto channel =
-      address.data_port % config_.host_channels_per_stack;
-  const auto index = static_cast<std::size_t>(address.stack) *
-                         config_.host_channels_per_stack +
-                     channel;
-  return host_links_.at(index).reserve(now, bytes);
+LinkResource::Reservation Simulator::reserve_host(
+    const HostRoute& route, HostLinkDirection direction, SimTime now,
+    std::uint64_t bytes, bool measured) {
+  auto reservation =
+      host_interfaces_.at(route.stack).reserve(route, direction, now, bytes);
+  if (measured)
+    stats_.record_host_transfer(route.stack, route.channel, direction,
+                                reservation.start, reservation.transfer_end);
+  return reservation;
 }
 
-SimTime Simulator::reserve_fabric(const PhysicalAddr& address, SimTime now,
-                                  std::uint64_t bytes) {
-  return fabrics_.at(address.stack).reserve(now, bytes, address.data_port);
+LinkResource::Reservation Simulator::reserve_fabric(
+    const PhysicalAddr& address, SimTime now, std::uint64_t bytes,
+    bool measured) {
+  auto reservation = fabrics_.at(address.stack).reserve_window(
+      now, bytes, address.data_port);
+  if (measured)
+    stats_.record_fabric_transfer(address.stack, address.data_port,
+                                  reservation.start,
+                                  reservation.transfer_end);
+  return reservation;
 }
 
 void Simulator::split_request(Request& request) {
   const auto first_lpn = request.logical_addr / config_.page_size;
   if (request.op == OpType::Erase || request.op == OpType::Refresh) {
     const auto address = mapper_.map_read(first_lpn);
-    SubRequest sub{next_subrequest_id_++, request.id, request.op,
-                   TransactionSource::Maintenance, first_lpn, 0, address,
-                   std::nullopt};
+    SubRequest sub;
+    sub.id = next_subrequest_id_++;
+    sub.parent_id = request.id;
+    sub.op = request.op;
+    sub.source = TransactionSource::Maintenance;
+    sub.lpn = first_lpn;
+    sub.paddr = address;
     sub.arrival_time = now_;
+    sub.host_route = request.host_route;
+    sub.latency.host_command_wait_ns = request.host_command_wait_ns;
+    sub.latency.host_command_service_ns = request.host_command_service_ns;
     subrequests_.emplace(sub.id, sub);
     ++request.pending_subreqs;
     schedule(now_, EventType::SubreqReady, request.id, sub.id);
@@ -191,15 +229,32 @@ void Simulator::split_request(Request& request) {
                                ? mapper_.placement(lpn)
                                : mapper_.map_read(lpn);
     address.offset = first_offset;
-    SubRequest sub{next_subrequest_id_++, request.id, request.op,
-                   TransactionSource::User, lpn, bytes, address,
-                   std::nullopt};
+    if (request.op == OpType::Read &&
+        config_.initialization_mode != InitializationMode::Empty)
+      materialize_initialized_page(address);
+    SubRequest sub;
+    sub.id = next_subrequest_id_++;
+    sub.parent_id = request.id;
+    sub.op = request.op;
+    sub.source = TransactionSource::User;
+    sub.lpn = lpn;
+    sub.bytes = bytes;
+    sub.paddr = address;
     sub.arrival_time = now_;
-    subrequests_.emplace(sub.id, sub);
+    sub.host_route = host_router_.route(lpn * config_.page_size, address);
+    sub.latency.host_command_wait_ns = request.host_command_wait_ns;
+    sub.latency.host_command_service_ns = request.host_command_service_ns;
     ++request.pending_subreqs;
-    const auto ready = request.op == OpType::Write
-                           ? reserve_host(address, now_, bytes)
-                           : now_;
+    auto ready = now_;
+    if (request.op == OpType::Write) {
+      const auto transfer = reserve_host(
+          sub.host_route, HostLinkDirection::HostToDevice, now_, bytes,
+          request.measured);
+      sub.latency.host_data_wait_ns = transfer.start - now_;
+      sub.latency.host_data_service_ns = transfer.completion - transfer.start;
+      ready = transfer.completion;
+    }
+    subrequests_.emplace(sub.id, sub);
     schedule(ready, EventType::SubreqReady, request.id, sub.id);
     remaining -= bytes;
     ++lpn;
@@ -208,24 +263,100 @@ void Simulator::split_request(Request& request) {
 }
 
 void Simulator::run() {
-  while (!events_.empty()) {
-    const Event event = events_.top();
-    events_.pop();
+  while (!event_queue_.empty()) {
+    const Event event = event_queue_.pop();
     now_ = event.time;
     handle(event);
   }
+  phase_ = SimulationPhase::Drain;
+}
+
+void Simulator::run(IRequestSource& source) {
+  if (!event_queue_.empty() || submitted_requests_ != 0)
+    throw std::logic_error(
+        "streaming run requires a fresh simulator with no submitted requests");
+  streaming_submission_ = true;
+  phase_ = config_.warmup_requests ? SimulationPhase::Warmup
+                                   : SimulationPhase::Measure;
+
+  TraceEntry entry{};
+  for (std::uint64_t i = 0; i < config_.warmup_requests; ++i) {
+    if (config_.max_requests && submitted_requests_ >= config_.max_requests)
+      break;
+    if (!source.next(entry)) break;
+    submit(entry);
+  }
+  while (!event_queue_.empty()) {
+    const auto event = event_queue_.pop();
+    now_ = event.time;
+    handle(event);
+  }
+
+  phase_ = SimulationPhase::Measure;
+  bool has_next =
+      (!config_.max_requests || submitted_requests_ < config_.max_requests) &&
+      source.next(entry);
+  SimTime measurement_offset = 0;
+  if (has_next && entry.timestamp_ns < now_)
+    measurement_offset = now_ - entry.timestamp_ns;
+
+  while (has_next || !event_queue_.empty()) {
+    const SimTime adjusted_time = entry.timestamp_ns + measurement_offset;
+    if (has_next &&
+        (event_queue_.empty() || adjusted_time < event_queue_.next().time)) {
+      auto adjusted = entry;
+      adjusted.timestamp_ns = adjusted_time;
+      submit(adjusted);
+      has_next =
+          (!config_.max_requests ||
+           submitted_requests_ < config_.max_requests) &&
+          source.next(entry);
+      continue;
+    }
+    const auto event = event_queue_.pop();
+    now_ = event.time;
+    handle(event);
+  }
+  phase_ = SimulationPhase::Drain;
+  streaming_submission_ = false;
 }
 
 void Simulator::run_until(SimTime until) {
   if (until < now_)
     throw std::invalid_argument("run_until cannot move simulated time backward");
-  while (!events_.empty() && events_.top().time <= until) {
-    const Event event = events_.top();
-    events_.pop();
+  while (!event_queue_.empty() && event_queue_.next().time <= until) {
+    const Event event = event_queue_.pop();
     now_ = event.time;
     handle(event);
   }
   now_ = until;
+}
+
+void Simulator::materialize_initialized_page(const PhysicalAddr& address) {
+  auto& block = plane(address).blocks.at(address.block);
+  if (erased_blocks_.contains(block_key(address)) || block.bad ||
+      bitmap_test(block.valid_bitmap, address.page) ||
+      page_state(address) != PageState::Erased)
+    return;
+  bitmap_set(block.valid_bitmap, config_.pages_per_block, address.page);
+  ++block.valid_pages;
+  block.next_program_page =
+      std::max(block.next_program_page, address.page + 1);
+  block.state = block.next_program_page == config_.pages_per_block
+                    ? BlockState::Closed
+                    : BlockState::Open;
+}
+
+bool Simulator::is_measured(std::uint64_t request_id) const {
+  return requests_.at(request_id).measured;
+}
+
+void Simulator::record_queue_depth() {
+  if (phase_ != SimulationPhase::Measure) return;
+  std::uint64_t active = 0;
+  for (const auto value : active_per_stack_) active += value;
+  stats_.record_queue_depth(now_, queue_depth_[0], queue_depth_[1],
+                            queue_depth_[2], queue_depth_[3], active);
 }
 
 }  // namespace hbfsim

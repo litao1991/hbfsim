@@ -56,7 +56,7 @@ void Simulator::complete_subrequest(std::uint64_t id, SimTime now) {
   auto& sub = sub_it->second;
   sub.complete_time = now;
   const auto parent_id = sub.parent_id;
-  if (parent_id >= config_.warmup_requests)
+  if (is_measured(parent_id))
     stats_.record_subrequest(sub);
   auto request_it = requests_.find(parent_id);
   auto& request = request_it->second;
@@ -65,7 +65,7 @@ void Simulator::complete_subrequest(std::uint64_t id, SimTime now) {
   subrequests_.erase(sub_it);
   if (request_done) {
     request.complete_time = now;
-    if (request.id >= config_.warmup_requests)
+    if (request.measured)
       stats_.record_request(request);
     requests_.erase(request_it);
   }
@@ -89,7 +89,13 @@ void Simulator::handle(const Event& event) {
     case EventType::HostArrival: {
       const auto first =
           mapper_.map_read(request.logical_addr / config_.page_size);
-      schedule(reserve_host(first, now_, 64),
+      request.host_route = host_router_.route(request.logical_addr, first);
+      const auto command = reserve_host(
+          request.host_route, HostLinkDirection::Command, now_, 64,
+          request.measured);
+      request.host_command_wait_ns = command.start - now_;
+      request.host_command_service_ns = command.completion - command.start;
+      schedule(command.completion,
                EventType::HostCommandDone, request.id);
       break;
     }
@@ -105,9 +111,11 @@ void Simulator::handle(const Event& event) {
       if (!target.suspend_pending ||
           target.active_subrequest != sub.id)
         break;
-      if (sub.parent_id >= config_.warmup_requests)
-        stats_.record_plane_issue(plane_index(sub.paddr),
+      if (is_measured(sub.parent_id))
+        stats_.record_array_issue(sub.paddr.stack, sub.paddr.die,
+                                  plane_index(sub.paddr),
                                   sub.array_active_since, now_);
+      sub.latency.array_service_ns += now_ - sub.array_active_since;
       release_array(sub);
       target.active_subrequest.reset();
       target.suspend_pending = false;
@@ -127,7 +135,7 @@ void Simulator::handle(const Event& event) {
           reliability_.read_result(sub.bytes, sub.read_attempts);
       if (result.status == ReadErrorStatus::Uncorrectable &&
           sub.read_attempts < config_.max_read_retries) {
-        if (sub.parent_id >= config_.warmup_requests)
+        if (is_measured(sub.parent_id))
           stats_.record_read_retry();
         ++sub.read_attempts;
         const auto done = now_ + config_.read_retry_ns +
@@ -141,26 +149,32 @@ void Simulator::handle(const Event& event) {
       auto& block = target.blocks.at(sub.paddr.block);
       if (result.status == ReadErrorStatus::Corrected) {
         bitmap_clear(block.failed_bitmap, sub.paddr.page);
-        if (sub.parent_id >= config_.warmup_requests)
+        if (is_measured(sub.parent_id))
           stats_.record_corrected_read();
       } else if (result.status == ReadErrorStatus::Uncorrectable) {
         bitmap_set(block.failed_bitmap, config_.pages_per_block,
                    sub.paddr.page);
         sub.failed = true;
-        if (sub.parent_id >= config_.warmup_requests)
+        if (is_measured(sub.parent_id))
           stats_.record_uncorrectable_read();
       } else {
         bitmap_clear(block.failed_bitmap, sub.paddr.page);
       }
       clear_transient_page_state(sub.paddr);
-      if (sub.parent_id >= config_.warmup_requests)
-        stats_.record_plane_issue(plane_index(sub.paddr),
+      if (is_measured(sub.parent_id))
+        stats_.record_array_issue(sub.paddr.stack, sub.paddr.die,
+                                  plane_index(sub.paddr),
                                   sub.array_active_since, now_);
+      sub.latency.array_service_ns += now_ - sub.array_active_since;
       release_array(sub);
       target.active_subrequest.reset();
       target.data_register_busy = true;
       sub.complete_time = now_;
-      schedule(reserve_fabric(sub.paddr, now_, sub.bytes),
+      const auto fabric = reserve_fabric(sub.paddr, now_, sub.bytes,
+                                         is_measured(sub.parent_id));
+      sub.latency.fabric_wait_ns += fabric.start - now_;
+      sub.latency.fabric_service_ns += fabric.completion - fabric.start;
+      schedule(fabric.completion,
                EventType::NandDataOutDone, request.id, sub.id);
       dispatch_ready_programs(sub.paddr.stack, now_);
       dispatch_stack(sub.paddr.stack, now_);
@@ -190,9 +204,11 @@ void Simulator::handle(const Event& event) {
       if (sub.array_completion_time != now_) break;
       auto& target = plane(sub.paddr);
       auto& block = target.blocks.at(sub.paddr.block);
-      if (sub.parent_id >= config_.warmup_requests)
-        stats_.record_plane_issue(plane_index(sub.paddr),
+      if (is_measured(sub.parent_id))
+        stats_.record_array_issue(sub.paddr.stack, sub.paddr.die,
+                                  plane_index(sub.paddr),
                                   sub.array_active_since, now_);
+      sub.latency.array_service_ns += now_ - sub.array_active_since;
       if (reliability_.program_failed()) {
         clear_transient_page_state(sub.paddr);
         bitmap_set(block.failed_bitmap, config_.pages_per_block,
@@ -205,7 +221,7 @@ void Simulator::handle(const Event& event) {
                           ? BlockState::Closed
                           : BlockState::Open;
         sub.failed = true;
-        if (sub.parent_id >= config_.warmup_requests)
+        if (is_measured(sub.parent_id))
           stats_.record_program_failure();
       } else {
         finish_program(sub, now_);
@@ -229,9 +245,11 @@ void Simulator::handle(const Event& event) {
       if (sub.array_completion_time != now_) break;
       auto& target = plane(sub.paddr);
       auto& block = target.blocks.at(sub.paddr.block);
-      if (sub.parent_id >= config_.warmup_requests)
-        stats_.record_plane_issue(plane_index(sub.paddr),
+      if (is_measured(sub.parent_id))
+        stats_.record_array_issue(sub.paddr.stack, sub.paddr.die,
+                                  plane_index(sub.paddr),
                                   sub.array_active_since, now_);
+      sub.latency.array_service_ns += now_ - sub.array_active_since;
       block.state = BlockState::Free;
       block.next_program_page = 0;
       block.valid_pages = 0;
@@ -259,9 +277,11 @@ void Simulator::handle(const Event& event) {
       auto& sub = subrequests_.at(event.subreq_id);
       if (sub.array_completion_time != now_) break;
       auto& target = plane(sub.paddr);
-      if (sub.parent_id >= config_.warmup_requests)
-        stats_.record_plane_issue(plane_index(sub.paddr),
+      if (is_measured(sub.parent_id))
+        stats_.record_array_issue(sub.paddr.stack, sub.paddr.die,
+                                  plane_index(sub.paddr),
                                   sub.array_active_since, now_);
+      sub.latency.array_service_ns += now_ - sub.array_active_since;
       target.blocks.at(sub.paddr.block).last_refresh_time = now_;
       release_array(sub);
       target.active_subrequest.reset();
@@ -283,7 +303,12 @@ void Simulator::handle(const Event& event) {
       auto& target = plane(sub.paddr);
       target.data_register_busy = false;
       target.busy = false;
-      schedule(reserve_host(sub.paddr, now_, sub.bytes),
+      const auto host = reserve_host(
+          sub.host_route, HostLinkDirection::DeviceToHost, now_, sub.bytes,
+          is_measured(sub.parent_id));
+      sub.latency.host_data_wait_ns += host.start - now_;
+      sub.latency.host_data_service_ns += host.completion - host.start;
+      schedule(host.completion,
                EventType::SubreqDone, request.id, sub.id);
       dispatch_stack(sub.paddr.stack, now_);
       break;

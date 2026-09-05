@@ -1,6 +1,6 @@
 #include "hbfsim/core.h"
 
-#include <cassert>
+#include "test_support.h"
 
 namespace {
 
@@ -33,5 +33,5 @@ hbfsim::SimTime run_with_channels(std::uint32_t channels) {
 }  // namespace
 
 int main() {
-  assert(run_with_channels(2) < run_with_channels(1));
+  CHECK(run_with_channels(2) < run_with_channels(1));
 }

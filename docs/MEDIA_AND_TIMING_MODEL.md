@@ -141,6 +141,8 @@ Program/Erase 恢复后，后续命令还需要满足 `t_whr_ns`。
 
 ## 5. Host Link 与 DataFabric
 
+`HostRoute(stack, channel)` 与 `PhysicalAddr.data_port` 是两个独立结果。前者由逻辑页条带决定，后者由介质 placement 决定，因此 Host Channel 数和 DataPort 数可以独立扫描。
+
 Host Link 使用流水线带宽模型：
 
 ```text
@@ -152,15 +154,25 @@ completion = link.free_at + fixed_latency
 
 固定传播延迟不会阻塞下一次序列化，因此不会被错误地按 Page 完全串行叠加。
 
+`host_interface.full_duplex: true` 时 Command、H2D 和 D2H 各有独立流水线；关闭时三类传输共享一个 `free_at`。
+
 DataFabric 同时受以下条件约束：
 
 - Stack aggregate bandwidth；
-- 目标 data port 的可用时间；
+- 目标 data port 的可用时间与显式 `port_bandwidth`；
 - 固定传播延迟。
 
 不同端口可以在端口服务阶段重叠，但整体长期吞吐不能超过 aggregate bandwidth。
 
-## 6. Program failure
+## 6. 初始化语义
+
+- `empty`：Page 初始为 ERASED；严格校验下必须先 Program 再 Read；
+- `image_loaded`：把 trace 读取到的镜像页按需物化为 VALID；
+- `preconditioned`：当前同样使用稀疏按需物化，但保留独立语义入口，供后续稳态写入/GC 初始化器扩展。
+
+按需物化避免按照完整设备容量预建 Page 对象，同时允许 baseline 始终开启 `strict_media_validation`。Block 一旦在仿真期间被 Erase，就会退出初始镜像的懒物化范围，后续读取不会把已擦除页错误地恢复为 VALID。
+
+## 7. Program failure
 
 每次 Program 完成时，以 `program_failure_rate` 做 Bernoulli 抽样。
 
@@ -177,7 +189,7 @@ DataFabric 同时受以下条件约束：
 - 顺序编程位置仍前进；
 - 旧 L2P 和旧有效 Page 保持不变。
 
-## 7. RBER、ECC 与 Read Retry
+## 8. RBER、ECC 与 Read Retry
 
 第 `retry` 次读取的期望位错误数为：
 
@@ -200,7 +212,7 @@ UNCORRECTABLE 且未达到 `max_read_retries` 时，等待 `read_retry_ns` 后�
 
 随机序列由 `random_seed` 固定，便于实验复现。
 
-## 8. 关键不变量
+## 9. 关键不变量
 
 代码和测试应持续保证：
 
@@ -214,7 +226,7 @@ UNCORRECTABLE 且未达到 `max_read_retries` 时，等待 `read_retry_ns` 后�
 8. 相同时间事件按 `seq` 确定性执行；
 9. Warm-up 请求影响设备状态，但不进入测量统计。
 
-## 9. 模型边界
+## 10. 模型边界
 
 当前可靠性是统计抽象，没有建模：
 

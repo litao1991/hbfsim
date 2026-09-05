@@ -1,0 +1,3 @@
+op,samples,host_command_wait_ns,host_command_service_ns,host_data_wait_ns,host_data_service_ns,nand_queue_wait_ns,nand_command_wait_ns,array_service_ns,fabric_wait_ns,fabric_service_ns
+WRITE,2,0,11,0,51,6549.5,0,5000,5,74
+ERASE,1,0,11,0,0,4145,0,10000,0,0

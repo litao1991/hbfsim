@@ -34,7 +34,7 @@ timestamp_ns,op,address,size,stream
 | `size` | 字节数，支持 `KiB/MiB/GiB/TiB` |
 | `stream` | 可选 stream ID，当前记录但不参与调度 |
 
-Read/Write 的 `size` 必须非零。Erase/Refresh 使用地址定位 Block，size 可以为零。Trace 最好按时间戳非递减排列。
+Read/Write 的 `size` 必须非零。Erase/Refresh 使用地址定位 Block，size 可以为零。Trace 必须按时间戳非递减排列；解析器逐条读取，不把整个文件或全部 HostArrival 事件装入内存。
 
 ## 3. 配置参考
 
@@ -43,7 +43,8 @@ Read/Write 的 `size` 必须非零。Erase/Refresh 使用地址定位 Block，si
 | Key | 含义 |
 |---|---|
 | `simulation.max_requests` | 最大提交请求数；0 表示无限制 |
-| `simulation.warmup_requests` | 前 N 个请求正常执行但不计入统计 |
+| `simulation.warmup_requests` | 前 N 个请求执行并完全排空后进入测量阶段 |
+| `initialization.mode` | `empty/image_loaded/preconditioned`；后两者按需物化读到的有效页 |
 
 ### 3.2 拓扑与主机接口
 
@@ -53,6 +54,7 @@ Read/Write 的 `size` 必须非零。Erase/Refresh 使用地址定位 Block，si
 | `host_interface.channels_per_stack` | 每 Stack Host Channel 数 |
 | `host_interface.bandwidth_per_channel` | 每 Channel 字节带宽，如 `256GBps` |
 | `host_interface.fixed_latency_ns` | Host Link 固定传播延迟 |
+| `host_interface.full_duplex` | `true` 时 Command/H2D/D2H 使用独立资源；`false` 时共享串行资源 |
 
 ### 3.3 NAND 组织
 
@@ -98,6 +100,7 @@ Read/Write 的 `size` 必须非零。Erase/Refresh 使用地址定位 Block，si
 |---|---|
 | `internal_fabric.ports_per_stack` | 每 Stack 数据端口数 |
 | `internal_fabric.aggregate_bandwidth` | Stack 内部总带宽 |
+| `internal_fabric.port_bandwidth` | 单 DataPort 峰值带宽，不再由总带宽除以端口数隐式计算 |
 | `internal_fabric.fixed_latency_ns` | Fabric 固定传播延迟 |
 
 ### 3.7 映射与调度
@@ -138,7 +141,7 @@ Read/Write 的 `size` 必须非零。Erase/Refresh 使用地址定位 Block，si
 - `program_failures`；
 - `corrected_reads`、`uncorrectable_reads`、`read_retries`；
 - makespan 与 measurement duration；
-- mean latency、p99 latency；
+- mean latency、p50/p95/p99/p99.9 latency；
 - effective bandwidth 与 effective goodput；
 - 每种操作的数量、字节数、带宽、mean、p99。
 
@@ -149,6 +152,13 @@ plane,busy_ns,utilization
 ```
 
 这里的 busy 表示 NAND array 占用时间，不重复计算与 Program 重叠的 Cache Data In。
+
+其他输出：
+
+- `latency_breakdown.csv`：Host command、Host data、NAND queue、array、fabric 的平均等待/服务时间；
+- `resource_utilization.csv`：每 Stack 的 Array-only、Fabric-only、Overlap、Idle，以及 Host 利用率和活跃 Plane；
+- `queue_depth.csv`：队列变化时的 Read/Write/Erase/Refresh 深度和活跃 Plane；
+- `data_port_utilization.csv`、`die_utilization.csv`、`host_channel_utilization.csv`：细粒度资源占用。
 
 ## 5. 推荐实验矩阵
 
@@ -233,7 +243,8 @@ program_failure_rate
 | `test_scheduler` | 读优先和防饥饿基础路径 |
 | `test_timing` | 多 Plane 基础时序 |
 | `test_erase` | Write/Erase/Rewrite/Read 生命周期 |
-| `test_resources` | Link 流水线与 DataFabric 端口 |
+| `test_resources` | Link、显式 DataPort 带宽、Host/DataPort 解耦和全双工 |
 | `test_channels` | Host Channel 并行收益 |
 | `test_warmup` | Warm-up 排除统计 |
 | `test_advanced` | Page 瞬态、ready、失败、ECC、Retry、Multi-plane、Cache、Suspend/Resume |
+| `test_v011` | 初始化模式、严格 Warmup phase、流式 source 和新增统计文件 |

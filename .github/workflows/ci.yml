@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+        compiler: [gcc, clang]
+    runs-on: ubuntu-latest
+    env:
+      CC: ${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }}
+      CXX: ${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure ASan and UBSan
+        env:
+          CC: clang
+          CXX: clang++
+        run: >-
+          cmake -S . -B build-sanitize -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build
+        run: cmake --build build-sanitize --parallel
+      - name: Test
+        run: ctest --test-dir build-sanitize --output-on-failure

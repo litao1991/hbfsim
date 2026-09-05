@@ -1,6 +1,6 @@
 #include "hbfsim/core.h"
 
-#include <cassert>
+#include "test_support.h"
 
 int main() {
   hbfsim::Config c;
@@ -17,7 +17,9 @@ int main() {
   sim.submit({5, hbfsim::OpType::Erase, 0, 0, 0});
   sim.submit({10, hbfsim::OpType::Write, 0, 4096, 0});
   sim.submit({100, hbfsim::OpType::Read, 0, 4096, 0});
+  sim.run_until(99);
+  CHECK(sim.page_state({0, 0, 0, 0, 0}) == hbfsim::PageState::Valid);
   sim.run();
-  assert(sim.stats().completed_requests() == 4);
-  assert(sim.now() >= 100);
+  CHECK(sim.stats().completed_requests() == 4);
+  CHECK(sim.now() >= 100);
 }

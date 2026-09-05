@@ -1,6 +1,6 @@
 #include "hbfsim/core.h"
 
-#include <cassert>
+#include "test_support.h"
 
 int main() {
   hbfsim::Config c;
@@ -14,5 +14,5 @@ int main() {
   sim.submit({0, hbfsim::OpType::Read, 4096, 4096, 0});
   sim.submit({0, hbfsim::OpType::Write, 8192, 4096, 0});
   sim.run();
-  assert(sim.stats().completed_requests() == 3);
+  CHECK(sim.stats().completed_requests() == 3);
 }
