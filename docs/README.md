@@ -1,6 +1,6 @@
 # HBFSim 设计文档
 
-本目录记录 HBFSim v0.2.6 的架构、模型语义和实验方法。文档以当前代码实现为准。
+本目录记录 HBFSim v0.2.7 的架构、模型语义和实验方法。文档以当前代码实现为准。
 
 ## 文档索引
 
@@ -12,6 +12,7 @@
 - [V0.2.4_AUTOMATIC_REFRESH.md](V0.2.4_AUTOMATIC_REFRESH.md)：Retention Deadline、RefreshManager 与 CopyEngine 复用。
 - [V0.2.5_WEAR_BAD_BLOCK_CAPACITY.md](V0.2.5_WEAR_BAD_BLOCK_CAPACITY.md)：P/E 磨损、坏块退休与容量降级。
 - [V0.2.6_SCALABLE_STATS_EXPERIMENTS.md](V0.2.6_SCALABLE_STATS_EXPERIMENTS.md)：在线资源统计、队列采样和可复现实验 Runner。
+- [V0.2.7_MODEL_VALIDATION.md](V0.2.7_MODEL_VALIDATION.md)：扩展性、媒体管理不变量和回归测试组成的发布门禁。
 
 ## 设计定位
 

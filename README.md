@@ -1,8 +1,8 @@
-# HBFSim v0.2.6
+# HBFSim v0.2.7
 
 HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style NAND stacks. It models performance-relevant resources rather than packet- or bit-level hardware details.
 
-## Included through v0.2.6
+## Included through v0.2.7
 
 - Host commands and write/read payloads use separate staged events; requests are split into page-sized subrequests.
 - Stack → Die → Plane topology, with per-die and per-stack array-concurrency caps.
@@ -31,7 +31,7 @@ HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style
 - `ResourceTracker` accumulates Array/Fabric/Host occupancy and overlap online with memory bounded by topology. Queue depth is interval-sampled rather than retained at every state change.
 - `tools/experiment_runner.py` expands Cartesian parameter sweeps, runs them in parallel, records Git SHA and SHA-256 hashes, preserves input and fully resolved configs, aggregates metrics, and creates dependency-free SVG plots.
 
-Explicit in-place Refresh remains available as a maintenance operation. Automatic Refresh uses copy/remap/erase semantics. Wear leveling, temperature-aware retention, detailed voltage-threshold distributions, HBM overlap, and packet-level UCIe remain outside v0.2.6.
+Explicit in-place Refresh remains available as a maintenance operation. Automatic Refresh uses copy/remap/erase semantics. v0.2.7 adds a repeatable model-validation gate covering scaling, mapping, CopyEngine, GC, Refresh, wear, resources, and timing. Wear leveling, temperature-aware retention, detailed voltage-threshold distributions, HBM overlap, and packet-level UCIe remain outside v0.2.7.
 
 The reliability model is command-level rather than bit-level: each read samples a raw error count from a Poisson distribution, ECC corrects counts within `ecc_correctable_bits`, and each retry multiplies BER by `retry_ber_multiplier`. A failed program consumes its sequential-program position but does not replace the previous L2P mapping.
 
@@ -82,6 +82,8 @@ The supplied baseline is a FLINT-like research configuration, not a claim about 
 The v0.2 Host-managed mapping contract and implementation status are documented in [`docs/HOST_MANAGED_STRIPE_MAPPING.md`](docs/HOST_MANAGED_STRIPE_MAPPING.md). Automatic Refresh details are in [`docs/V0.2.4_AUTOMATIC_REFRESH.md`](docs/V0.2.4_AUTOMATIC_REFRESH.md).
 
 Run the supplied four-point reproducible sweep with `python3 tools/experiment_runner.py experiments/example_sweep.json`. See [`docs/V0.2.6_SCALABLE_STATS_EXPERIMENTS.md`](docs/V0.2.6_SCALABLE_STATS_EXPERIMENTS.md) for the manifest schema and output contract.
+
+Run the release validation gate with `python3 tools/model_validation.py --build-dir build`. See [`docs/V0.2.7_MODEL_VALIDATION.md`](docs/V0.2.7_MODEL_VALIDATION.md) for its coverage and report contract.
 
 For an automatic reclamation example, run `./build/hbfsim configs/hbf_host_gc.yaml traces/host_gc_cycle.csv`. The trace fills Host-visible capacity, explicitly trims one stripe, lets `HostGcManager` reclaim it, and then rewrites and reads the range.
 
