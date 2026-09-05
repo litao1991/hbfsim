@@ -1,0 +1,62 @@
+simulation:
+  max_requests: 0
+  warmup_requests: 0
+
+device:
+  stacks: 1
+
+host_interface:
+  channels_per_stack: 4
+  bandwidth_per_channel: 256GBps
+  fixed_latency_ns: 50
+
+nand:
+  strict_media_validation: false
+  dies_per_stack: 16
+  planes_per_die: 32
+  blocks_per_plane: 256
+  pages_per_block: 1024
+  page_size: 4KiB
+  timing:
+    read_ns: 2000
+    program_ns: 50000
+    erase_ns: 3000000
+    t_ccs_ns: 0
+    t_adl_ns: 0
+    t_whr_ns: 0
+    suspend_ns: 0
+    resume_ns: 0
+    multi_plane_setup_ns: 0
+    cache_program_setup_ns: 0
+    read_retry_ns: 0
+  features:
+    suspend_resume: false
+    multi_plane: false
+    max_multi_plane_width: 2
+    cache_program: false
+  reliability:
+    program_failure_rate: 0
+    raw_bit_error_rate: 0
+    retry_ber_multiplier: 0.25
+    ecc_correctable_bits: 0
+    max_read_retries: 0
+    random_seed: 1
+  parallelism:
+    max_active_planes_per_die: 32
+    max_active_planes_per_stack: 512
+
+internal_fabric:
+  ports_per_stack: 32
+  aggregate_bandwidth: 1TBps
+  fixed_latency_ns: 20
+
+mapping:
+  policy: burst_stripe
+  burst_size: 2MiB
+
+scheduler:
+  write_starvation_us: 100
+  max_consecutive_reads: 64
+
+statistics:
+  output_dir: results

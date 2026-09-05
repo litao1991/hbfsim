@@ -1,0 +1,51 @@
+device:
+  stacks: 1
+host_interface:
+  channels_per_stack: 1
+  bandwidth_per_channel: 100GBps
+  fixed_latency_ns: 10
+nand:
+  dies_per_stack: 1
+  planes_per_die: 2
+  blocks_per_plane: 8
+  pages_per_block: 16
+  page_size: 4KiB
+  timing:
+    read_ns: 1000
+    program_ns: 5000
+    erase_ns: 10000
+    t_ccs_ns: 5
+    t_adl_ns: 5
+    t_whr_ns: 5
+    suspend_ns: 20
+    resume_ns: 20
+    multi_plane_setup_ns: 10
+    cache_program_setup_ns: 5
+    read_retry_ns: 100
+  features:
+    suspend_resume: true
+    multi_plane: true
+    max_multi_plane_width: 2
+    cache_program: true
+  reliability:
+    program_failure_rate: 0
+    raw_bit_error_rate: 0
+    retry_ber_multiplier: 0.25
+    ecc_correctable_bits: 80
+    max_read_retries: 2
+    random_seed: 1
+  parallelism:
+    max_active_planes_per_die: 2
+    max_active_planes_per_stack: 2
+internal_fabric:
+  ports_per_stack: 2
+  aggregate_bandwidth: 100GBps
+  fixed_latency_ns: 10
+mapping:
+  policy: fine_stripe
+  burst_size: 8KiB
+scheduler:
+  write_starvation_us: 10
+  max_consecutive_reads: 2
+statistics:
+  output_dir: results/small

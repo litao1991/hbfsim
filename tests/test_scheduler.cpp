@@ -1,0 +1,18 @@
+#include "hbfsim/core.h"
+
+#include <cassert>
+
+int main() {
+  hbfsim::Config c;
+  c.stacks = 1; c.dies_per_stack = 1; c.planes_per_die = 1;
+  c.blocks_per_plane = 8; c.pages_per_block = 32; c.page_size = 4096;
+  c.max_active_planes_per_die = 1; c.max_active_planes_per_stack = 1;
+  c.mapping_policy = hbfsim::MappingPolicy::HostManaged;
+  c.write_starvation_ns = 1; c.max_consecutive_reads = 1;
+  hbfsim::Simulator sim(c);
+  sim.submit({0, hbfsim::OpType::Write, 0, 4096, 0});
+  sim.submit({0, hbfsim::OpType::Read, 4096, 4096, 0});
+  sim.submit({0, hbfsim::OpType::Write, 8192, 4096, 0});
+  sim.run();
+  assert(sim.stats().completed_requests() == 3);
+}

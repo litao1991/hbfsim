@@ -1,0 +1,27 @@
+# Build directories
+/build/
+/cmake-build-*/
+/out/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+Testing/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Compiler and sanitizer artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dSYM/
+
+# IDE and operating system files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
