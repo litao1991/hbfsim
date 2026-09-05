@@ -43,6 +43,22 @@ double parse_probability(const std::string& value) {
   return result;
 }
 
+double parse_ratio(const std::string& value) {
+  const auto normalized = detail::trim(value);
+  if (!normalized.empty() && normalized.back() == '%')
+    return parse_probability(normalized.substr(0, normalized.size() - 1)) /
+           100.0;
+  return parse_probability(normalized);
+}
+
+HostGcVictimPolicy parse_host_gc_policy(const std::string& value) {
+  const auto normalized = detail::lower(detail::trim(value));
+  if (normalized == "invalid_ratio" || normalized == "invalid-ratio")
+    return HostGcVictimPolicy::InvalidRatio;
+  if (normalized == "greedy") return HostGcVictimPolicy::Greedy;
+  throw std::runtime_error("unknown Host GC victim policy: " + value);
+}
+
 }  // namespace
 
 std::uint64_t parse_size(const std::string& raw_value) {
@@ -81,6 +97,7 @@ std::string to_string(OpType op) {
     case OpType::Write: return "WRITE";
     case OpType::Erase: return "ERASE";
     case OpType::Refresh: return "REFRESH";
+    case OpType::Invalidate: return "INVALIDATE";
   }
   return "UNKNOWN";
 }
@@ -102,6 +119,9 @@ OpType parse_op(const std::string& value) {
   if (normalized == "w" || normalized == "write") return OpType::Write;
   if (normalized == "e" || normalized == "erase") return OpType::Erase;
   if (normalized == "refresh") return OpType::Refresh;
+  if (normalized == "i" || normalized == "invalidate" ||
+      normalized == "trim" || normalized == "discard")
+    return OpType::Invalidate;
   throw std::runtime_error("unknown operation: " + value);
 }
 
@@ -168,6 +188,13 @@ Config Config::from_yaml_file(const std::string& path) {
   detail::assign_if(values, "scheduler.max_consecutive_reads", config.max_consecutive_reads, integer);
   detail::assign_if(values, "host_management.auto_recovery", config.auto_recovery_enabled, parse_bool);
   detail::assign_if(values, "host_management.max_recovery_attempts", config.max_recovery_attempts, integer);
+  detail::assign_if(values, "host_gc.enabled", config.host_gc_enabled, parse_bool);
+  detail::assign_if(values, "host_gc.low_watermark", config.host_gc_low_watermark, parse_ratio);
+  detail::assign_if(values, "host_gc.high_watermark", config.host_gc_high_watermark, parse_ratio);
+  detail::assign_if(values, "host_gc.overprovisioning_ratio", config.host_gc_overprovisioning_ratio, parse_ratio);
+  if (const auto it = values.find("host_gc.victim_policy");
+      it != values.end())
+    config.host_gc_victim_policy = parse_host_gc_policy(it->second);
   detail::assign_if(values, "copy_engine.max_inflight_reads", config.copy_max_inflight_reads, integer);
   detail::assign_if(values, "copy_engine.max_inflight_programs", config.copy_max_inflight_programs, integer);
   detail::assign_if(values, "copy_engine.copy_buffer_size", config.copy_buffer_size, parse_size);
@@ -221,6 +248,16 @@ void Config::validate() const {
       raw_bit_error_rate < 0.0 || raw_bit_error_rate > 1.0 ||
       retry_ber_multiplier < 0.0 || retry_ber_multiplier > 1.0)
     throw std::runtime_error("reliability probabilities must be in [0,1]");
+  if (host_gc_low_watermark < 0.0 || host_gc_low_watermark >= 1.0 ||
+      host_gc_high_watermark <= host_gc_low_watermark ||
+      host_gc_high_watermark > 1.0 ||
+      host_gc_overprovisioning_ratio < 0.0 ||
+      host_gc_overprovisioning_ratio >= 1.0)
+    throw std::runtime_error(
+        "Host GC requires 0 <= low < high <= 1 and 0 <= OP < 1");
+  if (host_gc_enabled && mapping_policy != MappingPolicy::HostManaged)
+    throw std::runtime_error(
+        "automatic Host GC requires mapping.policy: host_managed");
   const auto max_u64 = std::numeric_limits<std::uint64_t>::max();
   if (planes_per_stack > max_u64 / blocks_per_plane ||
       planes_per_stack * blocks_per_plane > max_u64 / pages_per_block)

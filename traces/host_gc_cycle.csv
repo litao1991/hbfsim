@@ -1,0 +1,5 @@
+timestamp_ns,op,address,size,stream
+0,W,0,64KiB,0
+100000,TRIM,0,16KiB,0
+200000,W,0,16KiB,0
+300000,R,0,4KiB,0

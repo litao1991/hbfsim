@@ -1,8 +1,8 @@
-# HBFSim v0.2.2
+# HBFSim v0.2.3
 
 HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style NAND stacks. It models performance-relevant resources rather than packet- or bit-level hardware details.
 
-## Included through v0.2.2
+## Included through v0.2.3
 
 - Host commands and write/read payloads use separate staged events; requests are split into page-sized subrequests.
 - Stack → Die → Plane topology, with per-die and per-stack array-concurrency caps.
@@ -21,11 +21,13 @@ HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style
 - Source-aware arbitration separates User, Recovery, Maintenance, Mapping, and GC traffic. Critical Recovery and foreground reads receive priority, while configurable aging prevents background starvation.
 - Recovery and explicit Host GC use a shared timed CopyEngine. Live pages traverse NAND Read, DataFabric, Host D2H/H2D, DataFabric, and NAND Program before atomic remap and multi-lane source erase. Failed destination stripes are aborted and retried without losing the active source.
 - CopyEngine reads are pipelined with configurable read-ahead, in-flight Read/Program limits, and a capacity-bounded Host Copy Buffer. Reads may complete out of order, while destination slots are reserved strictly in increasing order. A destination failure first drains already-issued work before abort/erase/retry.
+- `HostGcManager` starts Host-managed reclamation at a configurable free-stripe low watermark and continues toward a high watermark. It supports deterministic `invalid_ratio` and `greedy` victim selection, reserves overprovisioned stripes from Host-visible capacity, and directly erases fully invalid victims without allocating a destination.
+- Trace `TRIM`/`INVALIDATE`/`DISCARD` requests explicitly invalidate Host-managed logical pages. Rewriting the range is legal only after reclamation has atomically removed the old mapping; implicit overwrite remains forbidden.
 - CSV traces stream one record at a time. The production path enforces `INITIALIZE → WARMUP → MEASURE → DRAIN`; warm-up is fully drained before measured requests are admitted.
 - `empty`, `image_loaded`, and `preconditioned` initialization modes allow strict validation for read-only traces without allocating metadata for the full device.
 - Fixed-memory latency histograms report p50/p95/p99/p99.9. Additional CSVs expose transaction latency breakdown, queue depth, Stack array/fabric overlap, and Host Channel/DataPort/Die utilization.
 
-Refresh is accepted as an operation and has a timing path. Automatic refresh policy, automatic Host GC policy, wear leveling, HBM overlap, thermal behavior, detailed voltage-threshold distributions, and packet-level UCIe remain outside v0.2.2.
+Refresh is accepted as an operation and has a timing path. Automatic refresh policy, cost-benefit/age/wear-aware GC policies, wear leveling, HBM overlap, thermal behavior, detailed voltage-threshold distributions, and packet-level UCIe remain outside v0.2.3.
 
 The reliability model is command-level rather than bit-level: each read samples a raw error count from a Poisson distribution, ECC corrects counts within `ecc_correctable_bits`, and each retry multiplies BER by `retry_ber_multiplier`. A failed program consumes its sequential-program position but does not replace the previous L2P mapping.
 
@@ -39,6 +41,7 @@ src/trace.cpp       streaming IRequestSource and CSV trace input
 src/event_queue.cpp deterministic event queue
 src/mapper.cpp      mapping-policy selection and simulator adapter
 src/stripe_mapping.cpp Host-managed stripe allocation, implicit P2L, lifecycle
+src/host_gc.cpp    Host-side watermarks, victim selection, and GC admission
 src/copy_engine.cpp pipelined Recovery/Host-GC copy and bounded buffering
 src/link.cpp        HostRouter, full-duplex HostInterface, and DataFabric
 src/reliability.cpp seeded program-failure, raw-error, ECC, and retry model
@@ -60,7 +63,7 @@ ctest --test-dir build --output-on-failure
 ./build/hbfsim configs/hbf_baseline.yaml traces/example.csv
 ```
 
-The trace columns are `timestamp_ns,op,address,size,stream`; timestamps must be nondecreasing. Sizes may use `KiB`, `MiB`, `GiB`, or `TiB`; addresses accept decimal or `0x` hexadecimal notation. Results are emitted under `statistics.output_dir`. Besides `summary.csv` and `plane_utilization.csv`, v0.2.2 writes `latency_breakdown.csv`, `source_latency_breakdown.csv`, `resource_utilization.csv`, `queue_depth.csv`, `data_port_utilization.csv`, `die_utilization.csv`, and `host_channel_utilization.csv`. The summary also reports per-source Copy Buffer high-water marks.
+The trace columns are `timestamp_ns,op,address,size,stream`; timestamps must be nondecreasing. Sizes may use `KiB`, `MiB`, `GiB`, or `TiB`; addresses accept decimal or `0x` hexadecimal notation. Results are emitted under `statistics.output_dir`. Besides `summary.csv` and `plane_utilization.csv`, v0.2.3 writes `latency_breakdown.csv`, `source_latency_breakdown.csv`, `resource_utilization.csv`, `queue_depth.csv`, `data_port_utilization.csv`, `die_utilization.csv`, and `host_channel_utilization.csv`. The summary also reports per-source Copy Buffer high-water marks and automatic Host GC pressure/reclamation metrics.
 
 The baseline uses `initialization.mode: image_loaded` with strict validation. Metadata is materialized lazily for pages referenced by reads, so a large read-only image does not require one in-memory object per NAND page.
 
@@ -70,6 +73,8 @@ Multi-plane grouping requires the same operation, die, block index, and page ind
 
 The supplied baseline is a FLINT-like research configuration, not a claim about a mandatory HBF standard timing or topology.
 
-The v0.2 Host-managed mapping contract and implementation status are documented in [`docs/HOST_MANAGED_STRIPE_MAPPING.md`](docs/HOST_MANAGED_STRIPE_MAPPING.md). Stripe geometry, formula-based reverse mapping, state bitmaps, generation checks, failure notices, Recovery replay, explicit Host GC, atomic remap, and timed data movement are implemented. Automatic Refresh and extent/sparse fallback remain staged work.
+The v0.2 Host-managed mapping contract and implementation status are documented in [`docs/HOST_MANAGED_STRIPE_MAPPING.md`](docs/HOST_MANAGED_STRIPE_MAPPING.md). Stripe geometry, formula-based reverse mapping, state bitmaps, generation checks, failure notices, Recovery replay, explicit and watermark-triggered Host GC, atomic remap, and timed data movement are implemented. Automatic Refresh and extent/sparse fallback remain staged work.
+
+For an automatic reclamation example, run `./build/hbfsim configs/hbf_host_gc.yaml traces/host_gc_cycle.csv`. The trace fills Host-visible capacity, explicitly trims one stripe, lets `HostGcManager` reclaim it, and then rewrites and reads the range.
 
 For a write/erase/rewrite lifecycle smoke test, use `traces/read_write_erase.csv` with a small configuration. In `host_managed` mode, Erase expands to every lane in the physical stripe; only after all lane blocks finish erasing can that physical stripe be allocated with a newer generation. The automated erase test also enables strict validation and reads back the rewritten page.

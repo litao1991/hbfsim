@@ -1,6 +1,8 @@
 #include "hbfsim/core.h"
 
 #include <algorithm>
+#include <bit>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -38,6 +40,13 @@ bool LazyBitmap::any() const {
                      [](std::uint64_t word) { return word != 0; });
 }
 
+std::uint32_t LazyBitmap::count() const {
+  std::uint32_t result = 0;
+  for (const auto word : words_)
+    result += static_cast<std::uint32_t>(std::popcount(word));
+  return result;
+}
+
 StripeMappingTable::StripeMappingTable(const Config& config)
     : config_(config) {
   const auto width = static_cast<std::uint64_t>(config_.stacks) *
@@ -48,6 +57,12 @@ StripeMappingTable::StripeMappingTable(const Config& config)
     throw std::runtime_error("host-managed stripe geometry exceeds 32-bit slots");
   stripe_width_ = static_cast<std::uint32_t>(width);
   stripe_capacity_ = static_cast<std::uint32_t>(capacity);
+  const auto reserved = std::min<std::size_t>(
+      config_.blocks_per_plane - 1,
+      static_cast<std::size_t>(std::ceil(
+          static_cast<long double>(config_.blocks_per_plane) *
+          config_.host_gc_overprovisioning_ratio)));
+  host_visible_stripes_ = config_.blocks_per_plane - reserved;
   descriptors_.resize(config_.blocks_per_plane);
   generations_.resize(config_.blocks_per_plane, 0);
   for (std::uint64_t physical = 0; physical < config_.blocks_per_plane;
@@ -58,13 +73,26 @@ StripeMappingTable::StripeMappingTable(const Config& config)
 }
 
 std::uint64_t StripeMappingTable::logical_base(std::uint64_t lpn) const {
+  if (lpn / stripe_capacity_ >= host_visible_stripes_)
+    throw std::out_of_range(
+        "logical page exceeds Host-visible HBF capacity");
   return (lpn / stripe_capacity_) * stripe_capacity_;
+}
+
+std::vector<StripeId> StripeMappingTable::active_stripes() const {
+  std::vector<StripeId> result;
+  result.reserve(active_.size());
+  for (const auto& [_, stripe] : active_) result.push_back(stripe);
+  return result;
 }
 
 StripeId StripeMappingTable::allocate_internal(std::uint64_t base,
                                                bool publish) {
   if (base % stripe_capacity_ != 0)
     throw std::invalid_argument("STRIPE_LPN_NOT_ALIGNED");
+  if (base / stripe_capacity_ >= host_visible_stripes_)
+    throw std::out_of_range(
+        "logical stripe exceeds Host-visible HBF capacity");
   if (publish && active_.contains(base))
     throw std::runtime_error("LOGICAL_STRIPE_ALREADY_ALLOCATED");
   if (free_stripes_.empty())
@@ -268,6 +296,10 @@ void StripeMappingTable::invalidate(std::uint64_t lpn) {
   const auto active = active_stripe(lpn);
   if (!active) throw std::runtime_error("INVALIDATE_UNMAPPED_LPN");
   auto& target = mutable_descriptor(*active);
+  if (target.state != StripeState::Open &&
+      target.state != StripeState::Sealed)
+    throw std::runtime_error(
+        "INVALIDATE_REQUIRES_OPEN_OR_SEALED_STRIPE");
   const auto slot = static_cast<std::uint32_t>(lpn -
                                                 target.logical_base_lpn);
   if (!target.valid_bitmap.test(slot))

@@ -21,12 +21,42 @@ std::uint64_t Simulator::start_host_gc(std::uint64_t logical_addr) {
   const auto lpn = logical_addr / config_.page_size;
   const auto source = mapping->active_stripe(lpn);
   if (!source) throw std::runtime_error("HOST_GC_SOURCE_NOT_MAPPED");
-  const auto& descriptor = mapping->descriptor(*source);
-  if (descriptor.state == StripeState::Open) mapping->seal(*source);
-  if (mapping->descriptor(*source).state != StripeState::Sealed)
+  return start_gc_job(*source, true, now_);
+}
+
+std::uint64_t Simulator::start_gc_job(const StripeId& stripe, bool measured,
+                                      SimTime now) {
+  auto* mapping = mapper_.stripe_mapping();
+  const auto& descriptor = mapping->descriptor(stripe);
+  if (descriptor.state == StripeState::Open) mapping->seal(stripe);
+  const auto& sealed = mapping->descriptor(stripe);
+  if (sealed.state != StripeState::Sealed)
     throw std::runtime_error("HOST_GC_REQUIRES_SEALED_STRIPE");
-  return start_copy_job(TransactionSource::GarbageCollection, *source,
-                        std::nullopt, true, now_);
+  if (sealed.valid_slots == 0 && !sealed.failed_bitmap.any())
+    return start_gc_erase_only(stripe, measured, now);
+  return start_copy_job(TransactionSource::GarbageCollection, stripe,
+                        std::nullopt, measured, now);
+}
+
+std::uint64_t Simulator::start_gc_erase_only(
+    const StripeId& stripe, bool measured, SimTime now) {
+  auto* mapping = mapper_.stripe_mapping();
+  mapping->begin_migration(stripe);
+  CopyJob job;
+  job.id = next_copy_job_id_++;
+  job.source = TransactionSource::GarbageCollection;
+  job.source_stripe = stripe;
+  job.slot_limit = mapping->descriptor(stripe).next_program_slot;
+  job.pending_erases = mapping->stripe_width();
+  job.start_time = now;
+  job.measured = measured;
+  job.erase_only = true;
+  job.stage = CopyStage::ErasingSource;
+  const auto id = job.id;
+  copy_jobs_.emplace(id, std::move(job));
+  enqueue_stripe_erases(stripe, TransactionSource::GarbageCollection,
+                        measured, id, now);
+  return id;
 }
 
 std::uint64_t Simulator::start_copy_job(
@@ -170,6 +200,21 @@ void Simulator::enqueue_copy_program(std::uint64_t job_id,
            subrequest_id);
 }
 
+void Simulator::reserve_copy_hole(CopyJob& job, std::uint32_t slot) {
+  auto* mapping = mapper_.stripe_mapping();
+  const auto& source = mapping->descriptor(job.source_stripe);
+  mapping->reserve_hole(job.destination_stripe,
+                        source.logical_base_lpn + slot);
+  const auto address = mapping->address_for(job.destination_stripe, slot);
+  auto& block = plane(address).blocks.at(address.block);
+  if (block.next_program_page != address.page)
+    throw std::logic_error("copy hole violates block program order");
+  if (block.state == BlockState::Free) block.state = BlockState::Open;
+  ++block.next_program_page;
+  if (block.next_program_page == config_.pages_per_block)
+    block.state = BlockState::Closed;
+}
+
 void Simulator::enqueue_copy_erases(std::uint64_t job_id, SimTime now) {
   auto& job = copy_jobs_.at(job_id);
   auto* mapping = mapper_.stripe_mapping();
@@ -291,8 +336,7 @@ void Simulator::advance_copy_job(std::uint64_t job_id, SimTime now) {
         continue;
       }
       if (!source.valid_bitmap.test(slot)) {
-        mapping->reserve_hole(job.destination_stripe,
-                              source.logical_base_lpn + slot);
+        reserve_copy_hole(job, slot);
         ++job.next_program_slot;
         progress = true;
         continue;
@@ -446,7 +490,7 @@ void Simulator::finish_copy_job(std::uint64_t job_id, SimTime now,
                                 bool failed) {
   const auto it = copy_jobs_.find(job_id);
   if (it == copy_jobs_.end()) return;
-  if (failed) {
+  if (failed && !it->second.erase_only) {
     auto* mapping = mapper_.stripe_mapping();
     const auto state = mapping->descriptor(it->second.destination_stripe).state;
     if (state != StripeState::Stale && state != StripeState::Free) {

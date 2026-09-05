@@ -4,7 +4,7 @@
 
 本文定义 HBFSim v0.2 的 Host-managed 映射、Program Failure 恢复和主动 GC 语义，也是实现状态清单。
 
-截至 v0.2.2，阶段 A/B 已完成；阶段 C 的失败通知、Host replay、流水数据搬运和 destination retry 已完成；阶段 D 支持 Host 显式选择 victim、有效 slot 搬运、原子提交和源条带擦除。Automatic Refresh、自动 victim 策略，以及完整 extent/sparse fallback 仍在后续阶段。
+截至 v0.2.3，阶段 A/B 已完成；阶段 C 的失败通知、Host replay、流水数据搬运和 destination retry 已完成；阶段 D 同时支持 Host 显式 Victim 和 `HostGcManager` 水位触发 Victim，具备 OP 容量预留、有效 slot 搬运、全失效快速擦除、原子提交和源条带擦除。Automatic Refresh、更丰富的 Victim 策略，以及完整 extent/sparse fallback 仍在后续阶段。
 
 设计目标是利用上层提供的严格顺序约束，把传统逐 Page L2P/P2L 表收敛为条带级元数据，同时仍然准确模拟物理 Page 状态、数据搬运流量、资源竞争和失败恢复延迟。
 
@@ -134,7 +134,7 @@ NandMediaModel
 - `StripeAllocator` 管理 Free/Open/Sealed/Stale Stripe；
 - `StripeMappingTable` 保存逻辑区间到活动 `StripeId` 的映射；
 - `RecoveryManager` 接收 Program Failure 通知并生成 Host Copy；
-- `HostGcManager` 选择 Victim，生成 Copy、Commit 和 Erase；
+- `HostGcManager` 维护 free-stripe 压力状态，选择 Victim，生成 Copy、Commit 和 Erase；
 - `NandMediaModel` 不替 Host 选择新位置，也不静默修改逻辑映射。
 
 当前 `AddressMapper` 中的逐页 L2P 和每 Plane frontier 已由 `StripeMappingTable` 替代。非 Host-managed mapping policy 继续保留现有确定性 placement。
@@ -232,15 +232,15 @@ source → STALE → ERASE/BAD
 
 复制期间 source 仍是读请求的权威版本，destination 处于构建状态。只有完整成功的 `REMAP_COMMIT` 能切换映射；如果 destination 再次失败，则放弃该 generation 并重新分配目标条带。
 
-v0.2.2 的 CopyEngine 会通过真实 Erase 事务回收被放弃的 destination；达到 `max_recovery_attempts` 后停止重试、保留 source 为活动权威版本，并记录失败的 Recovery job。
+v0.2.3 的 CopyEngine 会通过真实 Erase 事务回收被放弃的 destination；达到 `max_recovery_attempts` 后停止重试、保留 source 为活动权威版本，并记录失败的 Recovery job。
 
-CopyEngine 不再按 `READ_i → PROGRAM_i → READ_i+1` 串行执行。它在 `prefetch_window_pages` 范围内预取有效 slot，并同时受 `max_inflight_reads`、`max_inflight_programs` 和 `copy_buffer_size` 约束。Read 可以乱序完成并进入 Host Copy Buffer，但 destination 的 slot 只能按逻辑顺序预留；无效 slot 同样按顺序转换为 hole。Read 获得的 buffer credit 在目标 Program 完成后释放，因此慢 Program 会自然反压新的 Read。
+CopyEngine 不再按 `READ_i → PROGRAM_i → READ_i+1` 串行执行。它在 `prefetch_window_pages` 范围内预取有效 slot，并同时受 `max_inflight_reads`、`max_inflight_programs` 和 `copy_buffer_size` 约束。Read 可以乱序完成并进入 Host Copy Buffer，但 destination 的 slot 只能按逻辑顺序预留；无效 slot 同样按顺序转换为 hole，并同步推进对应物理 Block 的 Program frontier，保证后续有效 slot 仍满足 NAND 顺序编程约束。Read 获得的 buffer credit 在目标 Program 完成后释放，因此慢 Program 会自然反压新的 Read。
 
 若任一在途 destination Program 失败，CopyEngine 停止发射新事务，等待已发射 Read/Program 全部完成，之后才执行 `ABORT_MIGRATION → ERASE destination → retry`。这样不会在 destination 仍有 reserved slot 时错误地切换 generation。状态表只保存预取窗口和在途 slot，不按完整条带容量物化每 Page 对象。
 
-## 9. Host 主动 GC
+## 9. HostGcManager 与主动 GC
 
-HBFSim 不在设备侧隐式启动 GC。Host GC 由以下显式步骤组成：
+HBFSim 不在设备侧运行自主 FTL/GC。v0.2.3 的 `HostGcManager` 是仿真器中的 Host policy：可由 low watermark 自动触发，也保留 `start_host_gc(logical_addr)` 显式入口。回收由以下步骤组成：
 
 ```text
 Host 选择 Victim Stripe
@@ -272,6 +272,16 @@ TransactionSource::Recovery
 这样前台请求延迟、队列竞争、Host/Fabric 带宽和写放大才会真实反映主动 GC 与 Recovery 的成本。
 
 如果没有覆盖、删除或条带退化，条带没有无效数据，Host 不需要为了传统 FTL 空间回收而启动 GC。GC 的主要触发来源是显式释放、部分失效、失败恢复后的旧条带回收，以及上层容量整理策略。
+
+自动策略使用物理总 stripe 数计算水位：`free <= low` 时进入压力状态，持续选择 Victim，直到 `free >= high`。`overprovisioning_ratio` 对 Host 隐藏尾部逻辑容量，为 Copy/Recovery 保留物理空间。当前 Victim 策略为：
+
+- `invalid_ratio`：优先 invalid/consumed 比例更高的 Sealed stripe；
+- `greedy`：优先有效 Page 更少的 Sealed stripe；
+- 两种策略都优先全失效 stripe，并用 physical stripe ID 确定性打破平局。
+
+只有含 invalid slot 的 `SEALED` 条带可被自动选择。全失效条带不需要 destination，直接进入 `MIGRATING → ERASING → FREE`；部分失效条带必须先有一个 free destination，随后复用通用 CopyEngine。若低水位下没有合法 Victim，管理器记录 stall，并在 free count 或介质 epoch 改变之前抑制相同决策，避免事件循环反复启动无效 GC。
+
+需要特别说明：当前映射仍是一段连续逻辑区间对应一个物理 stripe。部分条带 GC 将一个 source 替换为一个 destination，净 free 数为零；只有全失效条带直接擦除，或未来支持多 extent 合并后，才能净提升 free stripe 数。因此 high watermark 是回收目标而不是必然保证。
 
 ## 10. GC 重组和稀疏异常
 
@@ -336,6 +346,9 @@ Copy 不是零延迟元数据命令，而是由 Read/Data Move/Program 事务组
 - `remap_commits`、`aborted_migrations`；
 - `stale_generation_rejects`；
 - `stripe_write_amplification`；
+- `host_gc_cycles_started`、`host_gc_high_watermark_reached`、`host_gc_stalls`；
+- `automatic_host_gc_jobs`、`automatic_host_gc_erase_only_jobs`；
+- `host_visible_stripes`、`min_free_stripes`；
 - `recovery_latency` 的 mean/p95/p99；
 - Free/Open/Sealed/Degraded/Migrating/Stale/Bad Stripe 数量时序；
 - implicit/extent/sparse/explicit mapping 条带数量。
@@ -397,6 +410,11 @@ Copy 不是零延迟元数据命令，而是由 Read/Data Move/Program 事务组
 ### 阶段 D：Host GC
 
 - [x] Host 通过 `start_host_gc` 显式选择 Victim；
+- [x] `HostGcManager` 根据 low/high watermark 自动进入和退出回收压力状态；
+- [x] 支持 `invalid_ratio`、`greedy` 确定性 Victim 策略；
+- [x] 通过 overprovisioning ratio 限制 Host-visible stripe 容量；
+- [x] 支持 Trace `TRIM/INVALIDATE/DISCARD` 显式失效逻辑 Page；
+- [x] 全失效 Victim 直接 Erase，不消耗 destination；
 - [x] 复制有效 slot，并为失效 slot 在 destination 保留 hole；
 - [x] 原子 Commit 与 source `STALE` 状态切换；
 - [x] 整 Stripe 多 Lane Erase；
@@ -413,4 +431,4 @@ Copy 不是零延迟元数据命令，而是由 Read/Data Move/Program 事务组
 
 ## 17. 非目标
 
-本设计不引入设备自主 FTL、设备自主 GC、隐式后台 Copy 或原地覆盖。Automatic Refresh、Wear Leveling、坏块容量降级和 HBM/HBF 联合模型仍是独立后续模块；它们必须通过相同 Host/Media 边界接入，不能绕过 generation 和原子映射提交规则。
+本设计不引入设备自主 FTL、设备自主 GC、隐式覆盖或原地覆盖。v0.2.3 的自动 GC 属于 Host policy 编排。Automatic Refresh、cost-benefit/age/wear-aware Victim、Wear Leveling、坏块容量降级和 HBM/HBF 联合模型仍是独立后续模块；它们必须通过相同 Host/Media 边界接入，不能绕过 generation 和原子映射提交规则。

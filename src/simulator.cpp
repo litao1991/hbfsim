@@ -30,7 +30,8 @@ Simulator::Simulator(Config config)
     : config_(std::move(config)),
       mapper_(config_),
       host_router_(config_),
-      reliability_(config_) {
+      reliability_(config_),
+      host_gc_manager_(config_) {
   config_.validate();
   const auto planes_per_stack =
       static_cast<std::uint64_t>(config_.dies_per_stack) *
@@ -88,6 +89,11 @@ void Simulator::submit(const TraceEntry& entry) {
   if ((entry.op == OpType::Read || entry.op == OpType::Write) &&
       entry.size == 0)
     throw std::invalid_argument("read/write request size must be non-zero");
+  if (entry.op == OpType::Invalidate &&
+      (entry.size == 0 || entry.address % config_.page_size != 0 ||
+       entry.size % config_.page_size != 0))
+    throw std::invalid_argument(
+        "invalidate range must be non-empty and page-aligned");
   Request request;
   request.id = next_request_id_++;
   request.arrival_time = entry.timestamp_ns;
@@ -179,6 +185,7 @@ void Simulator::invalidate_host_page(std::uint64_t logical_addr) {
   const auto paddr = mapping->lookup(lpn);
   if (!paddr) throw std::runtime_error("INVALIDATE_UNMAPPED_LPN");
   mapping->invalidate(lpn);
+  host_gc_manager_.notify_media_change();
   auto& block = plane(*paddr).blocks.at(paddr->block);
   bitmap_clear(block.valid_bitmap, paddr->page);
   bitmap_set(block.invalid_bitmap, config_.pages_per_block, paddr->page);
@@ -220,6 +227,15 @@ LinkResource::Reservation Simulator::reserve_fabric(
 
 void Simulator::split_request(Request& request) {
   const auto first_lpn = request.logical_addr / config_.page_size;
+  if (request.op == OpType::Invalidate) {
+    const auto page_count = request.size / config_.page_size;
+    for (std::uint64_t page = 0; page < page_count; ++page)
+      invalidate_host_page((first_lpn + page) * config_.page_size);
+    request.complete_time = now_;
+    if (request.measured) stats_.record_request(request);
+    requests_.erase(request.id);
+    return;
+  }
   if (request.op == OpType::Erase || request.op == OpType::Refresh) {
     const auto address = mapper_.map_read(first_lpn);
     const auto add_subrequest = [&](const PhysicalAddr& paddr) {
@@ -298,10 +314,12 @@ void Simulator::split_request(Request& request) {
 }
 
 void Simulator::run() {
+  maybe_start_host_gc(now_);
   while (!event_queue_.empty()) {
     const Event event = event_queue_.pop();
     now_ = event.time;
     handle(event);
+    maybe_start_host_gc(now_);
   }
   phase_ = SimulationPhase::Drain;
 }
@@ -325,6 +343,7 @@ void Simulator::run(IRequestSource& source) {
     const auto event = event_queue_.pop();
     now_ = event.time;
     handle(event);
+    maybe_start_host_gc(now_);
   }
 
   phase_ = SimulationPhase::Measure;
@@ -351,6 +370,7 @@ void Simulator::run(IRequestSource& source) {
     const auto event = event_queue_.pop();
     now_ = event.time;
     handle(event);
+    maybe_start_host_gc(now_);
   }
   phase_ = SimulationPhase::Drain;
   streaming_submission_ = false;
@@ -359,10 +379,12 @@ void Simulator::run(IRequestSource& source) {
 void Simulator::run_until(SimTime until) {
   if (until < now_)
     throw std::invalid_argument("run_until cannot move simulated time backward");
+  maybe_start_host_gc(now_);
   while (!event_queue_.empty() && event_queue_.next().time <= until) {
     const Event event = event_queue_.pop();
     now_ = event.time;
     handle(event);
+    maybe_start_host_gc(now_);
   }
   now_ = until;
 }

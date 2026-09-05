@@ -102,8 +102,10 @@ void StatsCollector::record_request(const Request& request) {
   if (request.failed) ++failed_requests_;
   if (request.op == OpType::Read) ++read_requests_;
   if (request.op == OpType::Write) ++write_requests_;
-  completed_bytes_ += request.size;
-  if (!request.failed) successful_bytes_ += request.size;
+  if (request.op == OpType::Read || request.op == OpType::Write) {
+    completed_bytes_ += request.size;
+    if (!request.failed) successful_bytes_ += request.size;
+  }
   op_bytes_[request.op] += request.size;
   if (!first_arrival_ || request.arrival_time < *first_arrival_)
     first_arrival_ = request.arrival_time;
@@ -156,6 +158,17 @@ std::uint64_t StatsCollector::copy_buffer_high_watermark(
     TransactionSource source) const {
   const auto it = copy_buffer_high_watermarks_.find(source);
   return it == copy_buffer_high_watermarks_.end() ? 0 : it->second;
+}
+
+void StatsCollector::observe_free_stripes(
+    std::uint64_t free_stripes, std::uint64_t host_visible_stripes) {
+  host_visible_stripes_ = host_visible_stripes;
+  if (!observed_free_stripes_) {
+    min_free_stripes_ = free_stripes;
+    observed_free_stripes_ = true;
+  } else {
+    min_free_stripes_ = std::min(min_free_stripes_, free_stripes);
+  }
 }
 
 std::uint64_t StatsCollector::source_bytes(TransactionSource source,
@@ -244,6 +257,15 @@ void StatsCollector::write(const std::string& output_dir,
           << "\nfailed_recovery_jobs," << failed_recovery_jobs_
           << "\ncompleted_host_gc_jobs," << completed_gc_jobs_
           << "\nfailed_host_gc_jobs," << failed_gc_jobs_
+          << "\nhost_gc_cycles_started," << host_gc_cycles_started_
+          << "\nhost_gc_high_watermark_reached,"
+          << host_gc_high_watermark_reached_
+          << "\nhost_gc_stalls," << host_gc_stalls_
+          << "\nautomatic_host_gc_jobs," << automatic_gc_jobs_
+          << "\nautomatic_host_gc_erase_only_jobs,"
+          << automatic_gc_erase_only_jobs_
+          << "\nhost_visible_stripes," << host_visible_stripes_
+          << "\nmin_free_stripes," << min_free_stripes_
           << "\nrecovery_read_bytes,"
           << source_bytes(TransactionSource::Recovery, OpType::Read)
           << "\nrecovery_program_bytes,"

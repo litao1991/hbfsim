@@ -20,9 +20,10 @@ namespace hbfsim {
 
 using SimTime = std::uint64_t;
 
-enum class OpType { Read, Write, Erase, Refresh };
+enum class OpType { Read, Write, Erase, Refresh, Invalidate };
 enum class MappingPolicy { Linear, FineStripe, BurstStripe, HostManaged };
 enum class TransactionSource { User, Mapping, Maintenance, GarbageCollection, Recovery };
+enum class HostGcVictimPolicy { InvalidRatio, Greedy };
 enum class BlockState { Free, Open, Closed, Erasing, Bad };
 enum class PageState { Erased, Reading, Programming, Valid, Invalid, Failed };
 enum class StripeState {
@@ -82,6 +83,12 @@ struct Config {
   std::uint32_t max_consecutive_reads = 64;
   bool auto_recovery_enabled = false;
   std::uint32_t max_recovery_attempts = 3;
+  bool host_gc_enabled = false;
+  double host_gc_low_watermark = 0.10;
+  double host_gc_high_watermark = 0.20;
+  double host_gc_overprovisioning_ratio = 0.0;
+  HostGcVictimPolicy host_gc_victim_policy =
+      HostGcVictimPolicy::InvalidRatio;
   std::uint32_t copy_max_inflight_reads = 32;
   std::uint32_t copy_max_inflight_programs = 8;
   std::uint64_t copy_buffer_size = 2 * 1024 * 1024;
@@ -136,6 +143,7 @@ class LazyBitmap {
   void set(std::uint32_t bit, std::uint32_t bit_count);
   void clear(std::uint32_t bit);
   bool any() const;
+  std::uint32_t count() const;
   void reset() { words_.clear(); }
   std::size_t allocated_words() const { return words_.size(); }
 
@@ -207,6 +215,11 @@ class StripeMappingTable {
   std::optional<StripeId> active_stripe(std::uint64_t lpn) const;
   std::size_t active_mapping_count() const { return active_.size(); }
   std::size_t free_stripe_count() const { return free_stripes_.size(); }
+  std::size_t total_stripe_count() const { return descriptors_.size(); }
+  std::size_t host_visible_stripe_count() const {
+    return host_visible_stripes_;
+  }
+  std::vector<StripeId> active_stripes() const;
 
  private:
   StripeId allocate_internal(std::uint64_t logical_base_lpn,
@@ -221,6 +234,38 @@ class StripeMappingTable {
   std::vector<std::uint32_t> generations_;
   std::deque<std::uint64_t> free_stripes_;
   std::map<std::uint64_t, StripeId> active_;
+  std::size_t host_visible_stripes_ = 0;
+};
+
+struct HostGcDecision {
+  StripeId victim;
+  bool erase_only = false;
+};
+
+struct HostGcPollResult {
+  std::optional<HostGcDecision> decision;
+  std::size_t free_stripes = 0;
+  std::size_t low_watermark = 0;
+  std::size_t high_watermark = 0;
+  bool cycle_started = false;
+  bool high_watermark_reached = false;
+  bool stalled = false;
+};
+
+class HostGcManager {
+ public:
+  explicit HostGcManager(const Config& config);
+  HostGcPollResult poll(const StripeMappingTable& mapping,
+                        bool copy_engine_busy);
+  void notify_media_change() { ++media_epoch_; }
+  bool pressure_active() const { return pressure_active_; }
+
+ private:
+  const Config& config_;
+  bool pressure_active_ = false;
+  std::uint64_t media_epoch_ = 0;
+  std::optional<std::uint64_t> stalled_epoch_;
+  std::optional<std::size_t> stalled_free_stripes_;
 };
 
 struct HostRoute {
@@ -540,6 +585,17 @@ class StatsCollector {
   void record_copy_job(TransactionSource source, bool failed);
   void record_copy_buffer_high_watermark(TransactionSource source,
                                          std::uint64_t bytes);
+  void observe_free_stripes(std::uint64_t free_stripes,
+                            std::uint64_t host_visible_stripes);
+  void record_host_gc_cycle_started() { ++host_gc_cycles_started_; }
+  void record_host_gc_high_watermark() {
+    ++host_gc_high_watermark_reached_;
+  }
+  void record_host_gc_stall() { ++host_gc_stalls_; }
+  void record_automatic_gc_job(bool erase_only) {
+    ++automatic_gc_jobs_;
+    if (erase_only) ++automatic_gc_erase_only_jobs_;
+  }
   void set_topology(std::uint32_t stacks, std::uint32_t dies_per_stack,
                     std::uint32_t planes_per_die,
                     std::uint32_t ports_per_stack,
@@ -568,6 +624,18 @@ class StatsCollector {
   }
   std::uint64_t completed_gc_jobs() const { return completed_gc_jobs_; }
   std::uint64_t failed_gc_jobs() const { return failed_gc_jobs_; }
+  std::uint64_t automatic_gc_jobs() const { return automatic_gc_jobs_; }
+  std::uint64_t automatic_gc_erase_only_jobs() const {
+    return automatic_gc_erase_only_jobs_;
+  }
+  std::uint64_t host_gc_stalls() const { return host_gc_stalls_; }
+  std::uint64_t host_gc_cycles_started() const {
+    return host_gc_cycles_started_;
+  }
+  std::uint64_t host_gc_high_watermark_reached() const {
+    return host_gc_high_watermark_reached_;
+  }
+  std::uint64_t min_free_stripes() const { return min_free_stripes_; }
   std::uint64_t copy_buffer_high_watermark(
       TransactionSource source) const;
 
@@ -598,6 +666,14 @@ class StatsCollector {
   std::uint64_t failed_recovery_jobs_ = 0;
   std::uint64_t completed_gc_jobs_ = 0;
   std::uint64_t failed_gc_jobs_ = 0;
+  std::uint64_t host_gc_cycles_started_ = 0;
+  std::uint64_t host_gc_high_watermark_reached_ = 0;
+  std::uint64_t host_gc_stalls_ = 0;
+  std::uint64_t automatic_gc_jobs_ = 0;
+  std::uint64_t automatic_gc_erase_only_jobs_ = 0;
+  std::uint64_t min_free_stripes_ = 0;
+  std::uint64_t host_visible_stripes_ = 0;
+  bool observed_free_stripes_ = false;
   std::uint32_t stacks_ = 0;
   std::uint32_t dies_per_stack_ = 0;
   std::uint32_t planes_per_die_ = 0;
@@ -702,6 +778,11 @@ class Simulator {
                                const StripeId& stripe,
                                std::optional<std::uint32_t> replay_slot,
                                bool measured, SimTime now);
+  std::uint64_t start_gc_job(const StripeId& stripe, bool measured,
+                             SimTime now);
+  std::uint64_t start_gc_erase_only(const StripeId& stripe, bool measured,
+                                    SimTime now);
+  void maybe_start_host_gc(SimTime now);
   void advance_copy_job(std::uint64_t job_id, SimTime now);
   void handle_copy_completion(std::uint64_t job_id,
                               std::optional<std::uint32_t> slot,
@@ -710,6 +791,7 @@ class Simulator {
                          SimTime now);
   void enqueue_copy_program(std::uint64_t job_id, std::uint32_t slot,
                             SimTime now);
+  void reserve_copy_hole(CopyJob& job, std::uint32_t slot);
   void enqueue_copy_erases(std::uint64_t job_id, SimTime now);
   void enqueue_stripe_erases(const StripeId& stripe,
                              TransactionSource source, bool measured,
@@ -748,6 +830,7 @@ class Simulator {
     bool measured = true;
     bool failure_pending = false;
     bool retry_after_drain = false;
+    bool erase_only = false;
     CopyStage stage = CopyStage::Copying;
     std::unordered_map<std::uint32_t, CopySlotStage> slots;
   };
@@ -760,6 +843,7 @@ class Simulator {
   AddressMapper mapper_;
   HostRouter host_router_;
   ReliabilityModel reliability_;
+  HostGcManager host_gc_manager_;
   SimTime now_ = 0;
   std::uint64_t next_request_id_ = 0;
   std::uint64_t next_subrequest_id_ = 0;

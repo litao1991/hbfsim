@@ -1,0 +1,67 @@
+device:
+  stacks: 1
+
+host_interface:
+  full_duplex: true
+  channels_per_stack: 2
+  bandwidth_per_channel: 100GBps
+  fixed_latency_ns: 10
+
+nand:
+  strict_media_validation: true
+  dies_per_stack: 1
+  planes_per_die: 2
+  blocks_per_plane: 5
+  pages_per_block: 2
+  page_size: 4KiB
+  timing:
+    read_ns: 1000
+    program_ns: 5000
+    erase_ns: 10000
+    t_ccs_ns: 5
+    t_adl_ns: 5
+    t_whr_ns: 5
+  parallelism:
+    max_active_planes_per_die: 2
+    max_active_planes_per_stack: 2
+
+internal_fabric:
+  ports_per_stack: 2
+  aggregate_bandwidth: 100GBps
+  port_bandwidth: 64GBps
+  fixed_latency_ns: 10
+
+initialization:
+  mode: empty
+
+mapping:
+  policy: host_managed
+
+host_management:
+  auto_recovery: true
+  max_recovery_attempts: 3
+
+host_gc:
+  enabled: true
+  low_watermark: 20%
+  high_watermark: 40%
+  overprovisioning_ratio: 20%
+  victim_policy: invalid_ratio
+
+copy_engine:
+  max_inflight_reads: 8
+  max_inflight_programs: 4
+  copy_buffer_size: 64KiB
+  prefetch_window_pages: 8
+
+scheduler:
+  write_starvation_us: 10
+  source_aging_ns: 1000000
+  max_consecutive_reads: 8
+
+statistics:
+  output_dir: results/host_gc
+
+simulation:
+  max_requests: 0
+  warmup_requests: 0

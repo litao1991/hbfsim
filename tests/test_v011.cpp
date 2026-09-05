@@ -63,6 +63,12 @@ int main() {
                    "host_management:\n"
                    "  auto_recovery: true\n"
                    "  max_recovery_attempts: 5\n"
+                   "host_gc:\n"
+                   "  enabled: true\n"
+                   "  low_watermark: 10%\n"
+                   "  high_watermark: 25%\n"
+                   "  overprovisioning_ratio: 20%\n"
+                   "  victim_policy: greedy\n"
                    "copy_engine:\n"
                    "  max_inflight_reads: 7\n"
                    "  max_inflight_programs: 3\n"
@@ -74,7 +80,9 @@ int main() {
                    "  reliability:\n"
                    "    program_failure_budget: 2\n"
                    "initialization:\n"
-                   "  mode: preconditioned\n";
+                   "  mode: preconditioned\n"
+                   "mapping:\n"
+                   "  policy: host_managed\n";
     config_file.close();
     const auto parsed = hbfsim::Config::from_yaml_file(path.string());
     CHECK(!parsed.host_full_duplex);
@@ -83,6 +91,12 @@ int main() {
           hbfsim::InitializationMode::Preconditioned);
     CHECK(parsed.auto_recovery_enabled);
     CHECK(parsed.max_recovery_attempts == 5);
+    CHECK(parsed.host_gc_enabled);
+    CHECK(parsed.host_gc_low_watermark == 0.10);
+    CHECK(parsed.host_gc_high_watermark == 0.25);
+    CHECK(parsed.host_gc_overprovisioning_ratio == 0.20);
+    CHECK(parsed.host_gc_victim_policy ==
+          hbfsim::HostGcVictimPolicy::Greedy);
     CHECK(parsed.copy_max_inflight_reads == 7);
     CHECK(parsed.copy_max_inflight_programs == 3);
     CHECK(parsed.copy_buffer_size == 8 * 1024);

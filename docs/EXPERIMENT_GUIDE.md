@@ -14,6 +14,7 @@ ctest --test-dir build --output-on-failure
 ```sh
 ./build/hbfsim configs/hbf_baseline.yaml traces/example.csv
 ./build/hbfsim configs/hbf_small_test.yaml traces/read_write_erase.csv
+./build/hbfsim configs/hbf_host_gc.yaml traces/host_gc_cycle.csv
 ```
 
 命令行只接收两个参数：配置文件和 trace 文件。输出目录由 `statistics.output_dir` 决定。
@@ -29,12 +30,12 @@ timestamp_ns,op,address,size,stream
 | 字段 | 说明 |
 |---|---|
 | `timestamp_ns` | 请求到达仿真时间，单位 ns |
-| `op` | `R/READ`、`W/WRITE`、`E/ERASE`、`REFRESH` |
+| `op` | `R/READ`、`W/WRITE`、`E/ERASE`、`REFRESH`、`I/INVALIDATE/TRIM/DISCARD` |
 | `address` | 字节地址，支持十进制或 `0x` 十六进制 |
 | `size` | 字节数，支持 `KiB/MiB/GiB/TiB` |
 | `stream` | 可选 stream ID，当前记录但不参与调度 |
 
-Read/Write 的 `size` 必须非零。Erase/Refresh 使用地址定位 Block，size 可以为零。Trace 必须按时间戳非递减排列；解析器逐条读取，不把整个文件或全部 HostArrival 事件装入内存。
+Read/Write/Invalidate 的 `size` 必须非零且按 Page 对齐。Invalidate 是 Host-managed 映射的显式逻辑失效控制，不产生 NAND 数据事务；Erase/Refresh 使用地址定位 Block，size 可以为零。Trace 必须按时间戳非递减排列；解析器逐条读取，不把整个文件或全部 HostArrival 事件装入内存。
 
 ## 3. 配置参考
 
@@ -121,7 +122,19 @@ Read/Write 的 `size` 必须非零。Erase/Refresh 使用地址定位 Block，si
 
 `burst_stripe` 要求 burst_size 是 page_size 的整数倍，并且每个 Stack 的 Page 容量能容纳整数个 burst。
 
-### 3.8 可靠性
+### 3.8 Automatic Host GC
+
+| Key | 含义 |
+|---|---|
+| `host_gc.enabled` | 启用由仿真 Host policy 执行的水位触发 GC；仅支持 `host_managed` 映射 |
+| `host_gc.low_watermark` | free stripe 数不高于该容量比例时进入回收压力状态，支持小数或 `%` |
+| `host_gc.high_watermark` | 回收目标水位；free stripe 达到该比例后结束本轮压力状态 |
+| `host_gc.overprovisioning_ratio` | 从 Host 可见逻辑容量中保留的物理 stripe 比例 |
+| `host_gc.victim_policy` | `invalid_ratio` 或 `greedy`；相同得分以 physical stripe ID 确定性打破平局 |
+
+全失效 Victim 直接执行多 Lane Erase，不占用 destination。部分失效 Victim 复用 CopyEngine 搬运有效 Page。当前一条逻辑区间只映射到一个物理条带，因此部分条带整理本身不会净增加 free stripe；若达不到高水位且没有新 Victim，管理器记录 stall，并在介质状态变化前抑制重复尝试。
+
+### 3.9 可靠性
 
 | Key | 含义 |
 |---|---|
@@ -133,7 +146,7 @@ Read/Write 的 `size` 必须非零。Erase/Refresh 使用地址定位 Block，si
 | `nand.reliability.max_read_retries` | 最大重试次数，不含初次 Read |
 | `nand.reliability.random_seed` | 确定性随机种子 |
 
-### 3.9 输出
+### 3.10 输出
 
 | Key | 含义 |
 |---|---|
@@ -144,13 +157,14 @@ Read/Write 的 `size` 必须非零。Erase/Refresh 使用地址定位 Block，si
 `summary.csv` 包含：
 
 - 请求总数、Read/Write 数；
-- `completed_bytes` 与 `successful_bytes`；
+- Read/Write 数据面的 `completed_bytes` 与 `successful_bytes`；Invalidate 的范围字节数单独出现在 `op_INVALIDATE_bytes`；
 - `failed_requests`；
 - `program_failures`；
 - `program_failure_notices`、`remap_commits`、`aborted_migrations`；
 - Recovery/Host GC 完成与失败 job 数；
 - Recovery/Host GC Read/Program bytes、恢复延迟和条带写放大；
 - Recovery/Host GC Copy Buffer high-water mark；
+- Automatic Host GC cycle、high-watermark completion、stall、任务数、erase-only 任务数、Host-visible stripe 与最小 free stripe 数；
 - `corrected_reads`、`uncorrectable_reads`、`read_retries`；
 - makespan 与 measurement duration；
 - mean latency、p50/p95/p99/p99.9 latency；
@@ -261,3 +275,6 @@ program_failure_rate
 | `test_warmup` | Warm-up 排除统计 |
 | `test_advanced` | Page 瞬态、ready、失败、ECC、Retry、Multi-plane、Cache、Suspend/Resume |
 | `test_v011` | 初始化模式、严格 Warmup phase、流式 source 和新增统计文件 |
+| `test_stripe_mapping` | Host-managed 条带公式映射、generation、位图和 remap 不变量 |
+| `test_copy_engine` | Recovery/GC 流水、Copy Buffer、destination failure drain/retry |
+| `test_host_gc` | OP 容量边界、Victim 策略、全失效 fast path、部分条带 CopyEngine 和 stall 抑制 |
