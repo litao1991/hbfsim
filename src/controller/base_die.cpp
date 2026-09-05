@@ -11,7 +11,8 @@ std::size_t source_index(TransactionSource source) {
   return static_cast<std::size_t>(source);
 }
 
-Plane::SourceQueues& queues_for(Plane& plane, OpType op) {
+PlaneControllerState::SourceQueues& queues_for(PlaneControllerState& plane,
+                                                OpType op) {
   if (op == OpType::Read) return plane.reads;
   if (op == OpType::Write) return plane.writes;
   if (op == OpType::Erase) return plane.erases;
@@ -26,6 +27,30 @@ const char* queue_name(OpType op) {
 }
 
 }  // namespace
+
+ControllerExecutionState::ControllerExecutionState(
+    const Config& config, const NandTopology& topology)
+    : active_per_die(topology.die_count(), 0),
+      active_per_stack(config.stacks, 0),
+      dispatch_cursor_per_stack(config.stacks, 0),
+      dispatch_wake_at(config.stacks, std::numeric_limits<SimTime>::max()),
+      program_ready(config.stacks) {}
+
+BaseDieController::BaseDieController(const Config& config,
+                                     NandMediaSystem& media)
+    : config_(config), media_(media), scheduler_(config),
+      interconnect_(config), execution_(config, media.topology()),
+      plane_states_(media.topology().plane_count()) {}
+
+PlaneControllerState& BaseDieController::plane_state(
+    const PhysicalAddr& address) {
+  return plane_states_.at(media_.topology().flat_plane(address));
+}
+
+const PlaneControllerState& BaseDieController::plane_state(
+    const PhysicalAddr& address) const {
+  return plane_states_.at(media_.topology().flat_plane(address));
+}
 
 int SchedulingPolicy::base_priority(const SubRequest& request) const {
   if (request.source == TransactionSource::Recovery && request.critical)
@@ -44,7 +69,7 @@ int SchedulingPolicy::base_priority(const SubRequest& request) const {
 }
 
 int SchedulingPolicy::priority(const SubRequest& request, SimTime waited,
-                               const Plane& plane) const {
+                               const PlaneControllerState& plane) const {
   auto value = base_priority(request);
   if (waited >= config_.source_aging_ns ||
       (request.op != OpType::Read &&
@@ -55,14 +80,15 @@ int SchedulingPolicy::priority(const SubRequest& request, SimTime waited,
   return value;
 }
 
-void MediaScheduler::enqueue(Plane& plane,
+void MediaScheduler::enqueue(PlaneControllerState& plane,
                              const SubRequest& request) const {
   queues_for(plane, request.op)
       .at(source_index(request.source))
       .push_back(request.id);
 }
 
-void MediaScheduler::dequeue(Plane& plane, const SubRequest& request,
+void MediaScheduler::dequeue(PlaneControllerState& plane,
+                             const SubRequest& request,
                              bool update_read_streak) const {
   auto& queue =
       queues_for(plane, request.op).at(source_index(request.source));
@@ -78,10 +104,11 @@ void MediaScheduler::dequeue(Plane& plane, const SubRequest& request,
 }
 
 std::optional<std::uint64_t> MediaScheduler::choose(
-    const Plane& plane, SimTime now, const Lookup& lookup) const {
+    const PlaneControllerState& plane, SimTime now,
+    const Lookup& lookup) const {
   std::optional<std::uint64_t> selected;
   int selected_priority = 0;
-  const auto consider = [&](const Plane::SourceQueues& queues) {
+  const auto consider = [&](const PlaneControllerState::SourceQueues& queues) {
     for (const auto& queue : queues) {
       if (queue.empty()) continue;
       const auto id = queue.front();
@@ -106,7 +133,7 @@ std::optional<std::uint64_t> MediaScheduler::choose(
 }
 
 bool MediaScheduler::queues_empty(
-    const Plane::SourceQueues& queues) const {
+    const PlaneControllerState::SourceQueues& queues) const {
   return std::all_of(queues.begin(), queues.end(),
                      [](const auto& queue) { return queue.empty(); });
 }
@@ -160,8 +187,7 @@ SimTime BaseDieController::command_ready_time(
 
 void BaseDieController::claim_command(const SubRequest& request,
                                       SimTime now, bool shared_command) {
-  auto& target = media_.plane(request.paddr);
-  target.ready_at = std::max(target.ready_at, now + config_.t_ccs_ns);
+  media_.claim_command_ready(request.paddr, now + config_.t_ccs_ns);
   if (shared_command) return;
   if (config_.simulation_profile == SimulationProfile::MediaResearch) {
     auto& die = media_.die(request.paddr);

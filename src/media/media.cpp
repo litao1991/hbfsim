@@ -1,6 +1,7 @@
 #include "hbfsim/media/nand_media.h"
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace hbfsim {
 namespace {
@@ -29,6 +30,10 @@ void bitmap_set(std::vector<std::uint64_t>& bitmap, std::uint32_t pages,
                 std::uint32_t page) {
   if (bitmap.empty()) bitmap.resize((pages + 63) / 64, 0);
   bitmap.at(page / 64) |= 1ULL << (page % 64);
+}
+
+void bitmap_clear(std::vector<std::uint64_t>& bitmap, std::uint32_t page) {
+  if (!bitmap.empty()) bitmap.at(page / 64) &= ~(1ULL << (page % 64));
 }
 
 }  // namespace
@@ -117,11 +122,12 @@ NandMediaSystem::NandMediaSystem(const Config& config,
     bank.read_cache = BankReadCache(config_.read_cache_entries_per_bank);
 }
 
-Plane& NandMediaSystem::plane(const PhysicalAddr& address) {
+PlaneMediaState& NandMediaSystem::plane(const PhysicalAddr& address) {
   return planes_.at(topology_.flat_plane(address));
 }
 
-const Plane& NandMediaSystem::plane(const PhysicalAddr& address) const {
+const PlaneMediaState& NandMediaSystem::plane(
+    const PhysicalAddr& address) const {
   return planes_.at(topology_.flat_plane(address));
 }
 
@@ -208,6 +214,124 @@ void NandMediaSystem::invalidate_read_cache_block(
 
 void NandMediaSystem::mark_erased(const PhysicalAddr& address) {
   erased_blocks_.insert(block_key(address));
+}
+
+void NandMediaSystem::begin_read(const PhysicalAddr& address) {
+  set_transient_page_state(address, PageState::Reading);
+}
+
+void NandMediaSystem::begin_program(const PhysicalAddr& address) {
+  invalidate_read_cache_page(address);
+  auto& block = plane(address).blocks.at(address.block);
+  if (block.state == BlockState::Free) block.state = BlockState::Open;
+  set_transient_page_state(address, PageState::Programming);
+}
+
+void NandMediaSystem::begin_erase(const PhysicalAddr& address) {
+  mark_erased(address);
+  invalidate_read_cache_block(address);
+  plane(address).blocks.at(address.block).state = BlockState::Erasing;
+}
+
+void NandMediaSystem::reserve_program_hole(const PhysicalAddr& address) {
+  auto& block = plane(address).blocks.at(address.block);
+  if (block.next_program_page != address.page)
+    throw std::logic_error("program hole violates block program order");
+  if (block.state == BlockState::Free) block.state = BlockState::Open;
+  ++block.next_program_page;
+  if (block.next_program_page == config_.pages_per_block)
+    block.state = BlockState::Closed;
+}
+
+void NandMediaSystem::complete_program(
+    const PhysicalAddr& address,
+    const std::optional<PhysicalAddr>& old_address, SimTime now) {
+  if (old_address) invalidate_page(*old_address);
+  auto& block = plane(address).blocks.at(address.block);
+  bitmap_set(block.valid_bitmap, config_.pages_per_block, address.page);
+  bitmap_clear(block.invalid_bitmap, address.page);
+  bitmap_clear(block.failed_bitmap, address.page);
+  clear_transient_page_state(address);
+  block.state = BlockState::Open;
+  ++block.next_program_page;
+  ++block.valid_pages;
+  block.last_program_time = now;
+  if (block.next_program_page == config_.pages_per_block)
+    block.state = BlockState::Closed;
+}
+
+void NandMediaSystem::fail_program(const PhysicalAddr& address, SimTime now) {
+  auto& block = plane(address).blocks.at(address.block);
+  clear_transient_page_state(address);
+  bitmap_set(block.failed_bitmap, config_.pages_per_block, address.page);
+  bitmap_clear(block.valid_bitmap, address.page);
+  bitmap_clear(block.invalid_bitmap, address.page);
+  ++block.next_program_page;
+  block.last_program_time = now;
+  block.state = block.next_program_page == config_.pages_per_block
+                    ? BlockState::Closed
+                    : BlockState::Open;
+}
+
+std::uint32_t NandMediaSystem::complete_erase(
+    const PhysicalAddr& address) {
+  invalidate_read_cache_block(address);
+  auto& block = plane(address).blocks.at(address.block);
+  block.state = BlockState::Free;
+  block.next_program_page = 0;
+  block.valid_pages = 0;
+  block.invalid_pages = 0;
+  block.valid_bitmap.clear();
+  block.invalid_bitmap.clear();
+  block.failed_bitmap.clear();
+  return ++block.erase_count;
+}
+
+void NandMediaSystem::invalidate_page(const PhysicalAddr& address) {
+  auto& block = plane(address).blocks.at(address.block);
+  if (!bitmap_test(block.valid_bitmap, address.page)) return;
+  bitmap_clear(block.valid_bitmap, address.page);
+  bitmap_set(block.invalid_bitmap, config_.pages_per_block, address.page);
+  --block.valid_pages;
+  ++block.invalid_pages;
+}
+
+void NandMediaSystem::clear_page_failure(const PhysicalAddr& address) {
+  bitmap_clear(plane(address).blocks.at(address.block).failed_bitmap,
+               address.page);
+}
+
+void NandMediaSystem::mark_page_failure(const PhysicalAddr& address) {
+  bitmap_set(plane(address).blocks.at(address.block).failed_bitmap,
+             config_.pages_per_block, address.page);
+}
+
+bool NandMediaSystem::page_is_valid(const PhysicalAddr& address) const {
+  return bitmap_test(plane(address).blocks.at(address.block).valid_bitmap,
+                     address.page);
+}
+
+void NandMediaSystem::mark_refreshed(const PhysicalAddr& address,
+                                     SimTime now) {
+  plane(address).blocks.at(address.block).last_refresh_time = now;
+}
+
+void NandMediaSystem::claim_command_ready(const PhysicalAddr& address,
+                                          SimTime ready_at) {
+  auto& target = plane(address);
+  target.ready_at = std::max(target.ready_at, ready_at);
+}
+
+void NandMediaSystem::set_array_ready_at(const PhysicalAddr& address,
+                                         SimTime ready_at) {
+  auto& target = plane(address);
+  target.ready_at = ready_at;
+  target.blocks.at(address.block).ready_at = ready_at;
+}
+
+void NandMediaSystem::set_data_register_busy(const PhysicalAddr& address,
+                                              bool busy) {
+  plane(address).data_register_busy = busy;
 }
 
 void NandMediaSystem::set_transient_page_state(

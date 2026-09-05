@@ -17,7 +17,7 @@ class SchedulingPolicy {
   explicit SchedulingPolicy(const Config& config) : config_(config) {}
   int base_priority(const SubRequest& request) const;
   int priority(const SubRequest& request, SimTime waited,
-               const Plane& plane) const;
+               const PlaneControllerState& plane) const;
 
  private:
   const Config& config_;
@@ -28,12 +28,14 @@ class MediaScheduler {
   using Lookup = std::function<const SubRequest&(std::uint64_t)>;
 
   explicit MediaScheduler(const Config& config) : policy_(config) {}
-  void enqueue(Plane& plane, const SubRequest& request) const;
-  void dequeue(Plane& plane, const SubRequest& request,
+  void enqueue(PlaneControllerState& plane, const SubRequest& request) const;
+  void dequeue(PlaneControllerState& plane, const SubRequest& request,
                bool update_read_streak = true) const;
-  std::optional<std::uint64_t> choose(const Plane& plane, SimTime now,
+  std::optional<std::uint64_t> choose(const PlaneControllerState& plane,
+                                      SimTime now,
                                       const Lookup& lookup) const;
-  bool queues_empty(const Plane::SourceQueues& queues) const;
+  bool queues_empty(
+      const PlaneControllerState::SourceQueues& queues) const;
   int base_priority(const SubRequest& request) const {
     return policy_.base_priority(request);
   }

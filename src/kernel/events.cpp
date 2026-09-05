@@ -4,50 +4,8 @@
 #include <limits>
 
 namespace hbfsim {
-namespace {
-
-bool bitmap_test(const std::vector<std::uint64_t>& bitmap,
-                 std::uint32_t page) {
-  const auto word = page / 64;
-  return word < bitmap.size() &&
-         (bitmap[word] & (1ULL << (page % 64))) != 0;
-}
-
-void bitmap_set(std::vector<std::uint64_t>& bitmap, std::uint32_t pages,
-                std::uint32_t page) {
-  if (bitmap.empty()) bitmap.resize((pages + 63) / 64, 0);
-  bitmap.at(page / 64) |= 1ULL << (page % 64);
-}
-
-void bitmap_clear(std::vector<std::uint64_t>& bitmap, std::uint32_t page) {
-  if (!bitmap.empty()) bitmap.at(page / 64) &= ~(1ULL << (page % 64));
-}
-
-}  // namespace
-
 void Simulator::finish_program(SubRequest& sub, SimTime now) {
-  if (sub.old_paddr) {
-    auto& old_block =
-        plane(*sub.old_paddr).blocks.at(sub.old_paddr->block);
-    if (bitmap_test(old_block.valid_bitmap, sub.old_paddr->page)) {
-      bitmap_clear(old_block.valid_bitmap, sub.old_paddr->page);
-      bitmap_set(old_block.invalid_bitmap, config_.pages_per_block,
-                 sub.old_paddr->page);
-      --old_block.valid_pages;
-      ++old_block.invalid_pages;
-    }
-  }
-  auto& block = plane(sub.paddr).blocks.at(sub.paddr.block);
-  bitmap_set(block.valid_bitmap, config_.pages_per_block, sub.paddr.page);
-  bitmap_clear(block.invalid_bitmap, sub.paddr.page);
-  bitmap_clear(block.failed_bitmap, sub.paddr.page);
-  clear_transient_page_state(sub.paddr);
-  block.state = BlockState::Open;
-  ++block.next_program_page;
-  ++block.valid_pages;
-  block.last_program_time = now;
-  if (block.next_program_page == config_.pages_per_block)
-    block.state = BlockState::Closed;
+  system_.media().complete_program(sub.paddr, sub.old_paddr, now);
   system_.mapper().commit_write(sub.lpn, sub.paddr, now);
 }
 
@@ -117,8 +75,9 @@ void Simulator::handle(const Event& event) {
   }
   if (event.type == EventType::DispatchWake) {
     const auto stack = static_cast<std::uint32_t>(event.subreq_id);
-    if (dispatch_wake_at_.at(stack) == now_)
-      dispatch_wake_at_.at(stack) =
+    auto& execution = system_.controller().execution();
+    if (execution.dispatch_wake_at.at(stack) == now_)
+      execution.dispatch_wake_at.at(stack) =
           std::numeric_limits<SimTime>::max();
     dispatch_ready_programs(stack, now_);
     dispatch_stack(stack, now_);
@@ -180,7 +139,7 @@ void Simulator::handle(const Event& event) {
       break;
     case EventType::NandSuspendDone: {
       auto& sub = subrequests_.at(event.subreq_id);
-      auto& target = plane(sub.paddr);
+      auto& target = controller_plane(sub.paddr);
       if (!target.suspend_pending ||
           target.active_subrequest != sub.id)
         break;
@@ -191,8 +150,7 @@ void Simulator::handle(const Event& event) {
       target.suspend_pending = false;
       target.suspended_subrequest = sub.id;
       target.busy = false;
-      target.ready_at = now_;
-      target.blocks.at(sub.paddr.block).ready_at = now_;
+      system_.media().set_array_ready_at(sub.paddr, now_);
       sub.suspended = true;
       dispatch_stack(sub.paddr.stack, now_);
       break;
@@ -200,8 +158,8 @@ void Simulator::handle(const Event& event) {
     case EventType::NandReadDone: {
       auto& sub = subrequests_.at(event.subreq_id);
       if (sub.array_completion_time != now_) break;
-      auto& target = plane(sub.paddr);
-      auto& block = target.blocks.at(sub.paddr.block);
+      auto& target = controller_plane(sub.paddr);
+      const auto& block = media_plane(sub.paddr).blocks.at(sub.paddr.block);
       const auto result = system_.reliability().read_result(
           sub.bytes, sub.read_attempts, block.erase_count);
       if (result.status == ReadErrorStatus::Uncorrectable &&
@@ -212,20 +170,18 @@ void Simulator::handle(const Event& event) {
         const auto done = now_ + config_.read_retry_ns +
                           config_.read_ns;
         sub.array_completion_time = done;
-        target.ready_at = done;
-        target.blocks.at(sub.paddr.block).ready_at = done;
+        system_.media().set_array_ready_at(sub.paddr, done);
         schedule(done, EventType::NandReadDone, request.id, sub.id);
         break;
       }
       if (result.status == ReadErrorStatus::Corrected) {
-        bitmap_clear(block.failed_bitmap, sub.paddr.page);
+        system_.media().clear_page_failure(sub.paddr);
         if (is_measured(sub.parent_id))
           stats_.record_corrected_read();
         if (config_.simulation_profile != SimulationProfile::MediaResearch)
           sub.status = HbfStatus::CorrectedEccRefreshRequired;
       } else if (result.status == ReadErrorStatus::Uncorrectable) {
-        bitmap_set(block.failed_bitmap, config_.pages_per_block,
-                   sub.paddr.page);
+        system_.media().mark_page_failure(sub.paddr);
         sub.failed = true;
         sub.status =
             config_.simulation_profile != SimulationProfile::MediaResearch
@@ -234,18 +190,18 @@ void Simulator::handle(const Event& event) {
         if (is_measured(sub.parent_id))
           stats_.record_uncorrectable_read();
       } else {
-        bitmap_clear(block.failed_bitmap, sub.paddr.page);
+        system_.media().clear_page_failure(sub.paddr);
       }
-      if (!sub.failed && bitmap_test(block.valid_bitmap, sub.paddr.page))
+      if (!sub.failed && system_.media().page_is_valid(sub.paddr))
         if (system_.media().read_cache_fill(sub.paddr, now_) &&
             is_measured(sub.parent_id))
           stats_.record_read_cache_eviction();
-      clear_transient_page_state(sub.paddr);
+      system_.media().clear_transient_page_state(sub.paddr);
       stop_array_tracking(sub, now_);
       sub.latency.array_service_ns += now_ - sub.array_active_since;
       release_array(sub);
       target.active_subrequest.reset();
-      target.data_register_busy = true;
+      system_.media().set_data_register_busy(sub.paddr, true);
       sub.complete_time = now_;
       const auto fabric = reserve_fabric(sub.paddr, now_, sub.bytes,
                                          is_measured(sub.parent_id));
@@ -259,8 +215,7 @@ void Simulator::handle(const Event& event) {
     }
     case EventType::NandDataInDone: {
       auto& sub = subrequests_.at(event.subreq_id);
-      auto& target = plane(sub.paddr);
-      target.data_register_busy = false;
+      system_.media().set_data_register_busy(sub.paddr, false);
       sub.ready_time = now_ +
                        (config_.multi_plane_enabled
                             ? config_.multi_plane_setup_ns
@@ -268,7 +223,8 @@ void Simulator::handle(const Event& event) {
       die(sub.paddr).ready_at =
           std::max(die(sub.paddr).ready_at,
                    now_ + config_.t_whr_ns);
-      program_ready_.at(sub.paddr.stack).push_back(sub.id);
+      system_.controller().execution().program_ready.at(sub.paddr.stack)
+          .push_back(sub.id);
       dispatch_ready_programs(sub.paddr.stack, now_);
       dispatch_stack(sub.paddr.stack, now_);
       break;
@@ -276,8 +232,8 @@ void Simulator::handle(const Event& event) {
     case EventType::NandAutoEraseDone: {
       auto& sub = subrequests_.at(event.subreq_id);
       if (sub.array_completion_time != now_) break;
-      auto& target = plane(sub.paddr);
-      auto& block = target.blocks.at(sub.paddr.block);
+      auto& target = controller_plane(sub.paddr);
+      const auto& block = media_plane(sub.paddr).blocks.at(sub.paddr.block);
       stop_array_tracking(sub, now_);
       const auto erase_service = now_ - sub.array_active_since;
       sub.latency.array_service_ns += erase_service;
@@ -291,18 +247,10 @@ void Simulator::handle(const Event& event) {
         if (is_measured(sub.parent_id)) stats_.record_erase_failure();
         retire_block(sub.paddr);
       } else {
-        system_.media().invalidate_read_cache_block(sub.paddr);
-        block.state = BlockState::Free;
-        block.next_program_page = 0;
-        block.valid_pages = 0;
-        block.invalid_pages = 0;
-        block.valid_bitmap.clear();
-        block.invalid_bitmap.clear();
-        block.failed_bitmap.clear();
-        ++block.erase_count;
+        const auto erase_count = system_.media().complete_erase(sub.paddr);
         system_.mapper().on_erase(sub.paddr);
         if (config_.max_erase_cycles != 0 &&
-            block.erase_count >= config_.max_erase_cycles) {
+            erase_count >= config_.max_erase_cycles) {
           sub.auto_erase_retired = true;
           sub.failed = true;
           sub.status = HbfStatus::ReducedCapacity;
@@ -318,8 +266,7 @@ void Simulator::handle(const Event& event) {
       } else {
         const auto ready = now_ + config_.t_whr_ns;
         sub.ready_time = ready;
-        target.ready_at = ready;
-        block.ready_at = ready;
+        system_.media().set_array_ready_at(sub.paddr, ready);
         die(sub.paddr).ready_at =
             std::max(die(sub.paddr).ready_at, ready);
         schedule(ready, EventType::NandAutoEraseProgramReady,
@@ -331,7 +278,7 @@ void Simulator::handle(const Event& event) {
     }
     case EventType::NandAutoEraseProgramReady: {
       auto& sub = subrequests_.at(event.subreq_id);
-      auto& target = plane(sub.paddr);
+      auto& target = controller_plane(sub.paddr);
       target.active_subrequest.reset();
       target.busy = false;
       start_program(sub.id, now_);
@@ -340,13 +287,13 @@ void Simulator::handle(const Event& event) {
     case EventType::NandProgramDone: {
       auto& sub = subrequests_.at(event.subreq_id);
       if (sub.array_completion_time != now_) break;
-      auto& target = plane(sub.paddr);
-      auto& block = target.blocks.at(sub.paddr.block);
+      auto& target = controller_plane(sub.paddr);
+      const auto& block = media_plane(sub.paddr).blocks.at(sub.paddr.block);
       stop_array_tracking(sub, now_);
       sub.latency.array_service_ns += now_ - sub.array_active_since;
       std::optional<ProgramFailureNotice> failure_notice;
       if (sub.auto_erase_failed || sub.auto_erase_retired) {
-        clear_transient_page_state(sub.paddr);
+        system_.media().clear_transient_page_state(sub.paddr);
         sub.failed = true;
         sub.status = sub.auto_erase_retired ? HbfStatus::ReducedCapacity
                                             : HbfStatus::EraseFailure;
@@ -354,16 +301,7 @@ void Simulator::handle(const Event& event) {
           stats_.record_erase_failure();
         retire_block(sub.paddr);
       } else if (system_.reliability().program_failed(block.erase_count)) {
-        clear_transient_page_state(sub.paddr);
-        bitmap_set(block.failed_bitmap, config_.pages_per_block,
-                   sub.paddr.page);
-        bitmap_clear(block.valid_bitmap, sub.paddr.page);
-        bitmap_clear(block.invalid_bitmap, sub.paddr.page);
-        ++block.next_program_page;
-        block.last_program_time = now_;
-        block.state = block.next_program_page == config_.pages_per_block
-                          ? BlockState::Closed
-                          : BlockState::Open;
+        system_.media().fail_program(sub.paddr, now_);
         if (config_.mapping_policy == MappingPolicy::HostManaged) {
           failure_notice = system_.mapper().fail_write(sub.lpn, sub.paddr);
           program_failure_notices_.push_back(*failure_notice);
@@ -382,8 +320,8 @@ void Simulator::handle(const Event& event) {
       release_array(sub);
       target.active_subrequest.reset();
       target.busy = false;
-      target.ready_at = now_ + config_.t_whr_ns;
-      block.ready_at = now_ + config_.t_whr_ns;
+      system_.media().set_array_ready_at(sub.paddr,
+                                         now_ + config_.t_whr_ns);
       die(sub.paddr).ready_at =
           std::max(die(sub.paddr).ready_at,
                    now_ + config_.t_whr_ns);
@@ -411,8 +349,8 @@ void Simulator::handle(const Event& event) {
     case EventType::NandEraseDone: {
       auto& sub = subrequests_.at(event.subreq_id);
       if (sub.array_completion_time != now_) break;
-      auto& target = plane(sub.paddr);
-      auto& block = target.blocks.at(sub.paddr.block);
+      auto& target = controller_plane(sub.paddr);
+      const auto& block = media_plane(sub.paddr).blocks.at(sub.paddr.block);
       stop_array_tracking(sub, now_);
       sub.latency.array_service_ns += now_ - sub.array_active_since;
       if (system_.reliability().erase_failed(block.erase_count)) {
@@ -421,17 +359,9 @@ void Simulator::handle(const Event& event) {
         if (is_measured(sub.parent_id)) stats_.record_erase_failure();
         retire_block(sub.paddr);
       } else {
-        system_.media().invalidate_read_cache_block(sub.paddr);
-        block.state = BlockState::Free;
-        block.next_program_page = 0;
-        block.valid_pages = 0;
-        block.invalid_pages = 0;
-        block.valid_bitmap.clear();
-        block.invalid_bitmap.clear();
-        block.failed_bitmap.clear();
-        ++block.erase_count;
+        const auto erase_count = system_.media().complete_erase(sub.paddr);
         if (config_.max_erase_cycles != 0 &&
-            block.erase_count >= config_.max_erase_cycles)
+            erase_count >= config_.max_erase_cycles)
           retire_block(sub.paddr);
         else
           system_.mapper().on_erase(sub.paddr);
@@ -439,8 +369,8 @@ void Simulator::handle(const Event& event) {
       release_array(sub);
       target.active_subrequest.reset();
       target.busy = false;
-      target.ready_at = now_ + config_.t_whr_ns;
-      block.ready_at = now_ + config_.t_whr_ns;
+      system_.media().set_array_ready_at(sub.paddr,
+                                         now_ + config_.t_whr_ns);
       die(sub.paddr).ready_at =
           std::max(die(sub.paddr).ready_at,
                    now_ + config_.t_whr_ns);
@@ -453,16 +383,15 @@ void Simulator::handle(const Event& event) {
     case EventType::NandRefreshDone: {
       auto& sub = subrequests_.at(event.subreq_id);
       if (sub.array_completion_time != now_) break;
-      auto& target = plane(sub.paddr);
+      auto& target = controller_plane(sub.paddr);
       stop_array_tracking(sub, now_);
       sub.latency.array_service_ns += now_ - sub.array_active_since;
-      target.blocks.at(sub.paddr.block).last_refresh_time = now_;
+      system_.media().mark_refreshed(sub.paddr, now_);
       release_array(sub);
       target.active_subrequest.reset();
       target.busy = false;
-      target.ready_at = now_ + config_.t_whr_ns;
-      target.blocks.at(sub.paddr.block).ready_at =
-          now_ + config_.t_whr_ns;
+      system_.media().set_array_ready_at(sub.paddr,
+                                         now_ + config_.t_whr_ns);
       die(sub.paddr).ready_at =
           std::max(die(sub.paddr).ready_at,
                    now_ + config_.t_whr_ns);
@@ -474,8 +403,8 @@ void Simulator::handle(const Event& event) {
     }
     case EventType::NandDataOutDone: {
       auto& sub = subrequests_.at(event.subreq_id);
-      auto& target = plane(sub.paddr);
-      target.data_register_busy = false;
+      auto& target = controller_plane(sub.paddr);
+      system_.media().set_data_register_busy(sub.paddr, false);
       target.busy = false;
       const auto host = reserve_host(
           sub.host_route, HostLinkDirection::DeviceToHost, now_, sub.bytes,

@@ -6,30 +6,10 @@
 #include <stdexcept>
 
 namespace hbfsim {
-namespace {
-
-void bitmap_set(std::vector<std::uint64_t>& bitmap, std::uint32_t pages,
-                std::uint32_t page) {
-  if (bitmap.empty()) bitmap.resize((pages + 63) / 64, 0);
-  bitmap.at(page / 64) |= 1ULL << (page % 64);
-}
-
-void bitmap_clear(std::vector<std::uint64_t>& bitmap, std::uint32_t page) {
-  if (!bitmap.empty()) bitmap.at(page / 64) &= ~(1ULL << (page % 64));
-}
-
-}  // namespace
-
 Simulator::Simulator(Config config)
     : config_(std::move(config)),
       system_(config_) {
   config_.validate();
-  active_per_die_.assign(system_.topology().die_count(), 0);
-  active_per_stack_.assign(config_.stacks, 0);
-  dispatch_cursor_per_stack_.assign(config_.stacks, 0);
-  dispatch_wake_at_.assign(config_.stacks,
-                           std::numeric_limits<SimTime>::max());
-  program_ready_.resize(config_.stacks);
   stats_.set_topology(config_.stacks, config_.dies_per_stack,
                       config_.planes_per_die, config_.ports_per_stack,
                       config_.host_channels_per_stack);
@@ -60,7 +40,7 @@ void Simulator::schedule(SimTime when, EventType type,
 
 void Simulator::schedule_dispatch_wake(std::uint32_t stack, SimTime when) {
   if (when <= now_) return;
-  auto& scheduled = dispatch_wake_at_.at(stack);
+  auto& scheduled = system_.controller().execution().dispatch_wake_at.at(stack);
   if (when >= scheduled) return;
   scheduled = when;
   schedule(when, EventType::DispatchWake, 0, stack);
@@ -101,12 +81,19 @@ std::uint32_t Simulator::plane_index(const PhysicalAddr& address) const {
   return system_.topology().flat_plane(address);
 }
 
-Plane& Simulator::plane(const PhysicalAddr& address) {
+const PlaneMediaState& Simulator::media_plane(
+    const PhysicalAddr& address) const {
   return system_.media().plane(address);
 }
 
-const Plane& Simulator::plane(const PhysicalAddr& address) const {
-  return system_.media().plane(address);
+PlaneControllerState& Simulator::controller_plane(
+    const PhysicalAddr& address) {
+  return system_.controller().plane_state(address);
+}
+
+const PlaneControllerState& Simulator::controller_plane(
+    const PhysicalAddr& address) const {
+  return system_.controller().plane_state(address);
 }
 
 DieState& Simulator::die(const PhysicalAddr& address) {
@@ -174,20 +161,7 @@ void Simulator::invalidate_host_page(std::uint64_t logical_addr) {
   mapping->invalidate(lpn);
   system_.media().invalidate_read_cache_page(*paddr);
   system_.host_gc_manager().notify_media_change();
-  auto& block = plane(*paddr).blocks.at(paddr->block);
-  bitmap_clear(block.valid_bitmap, paddr->page);
-  bitmap_set(block.invalid_bitmap, config_.pages_per_block, paddr->page);
-  --block.valid_pages;
-  ++block.invalid_pages;
-}
-
-void Simulator::set_transient_page_state(const PhysicalAddr& address,
-                                         PageState state) {
-  system_.media().set_transient_page_state(address, state);
-}
-
-void Simulator::clear_transient_page_state(const PhysicalAddr& address) {
-  system_.media().clear_transient_page_state(address);
+  system_.media().invalidate_page(*paddr);
 }
 
 LinkResource::Reservation Simulator::reserve_host(
@@ -369,7 +343,7 @@ void Simulator::split_request(Request& request) {
         schedule(host.completion, EventType::SubreqDone, request.id, sub.id);
       } else {
         if (config_.initialization_mode != InitializationMode::Empty)
-          materialize_initialized_page(sub.paddr);
+          system_.media().materialize_initialized_page(sub.paddr);
         if (system_.media().read_cache_lookup(sub.paddr, now_)) {
           if (request.measured) stats_.record_read_cache_hit(bytes);
           const auto fabric = reserve_fabric(
@@ -405,7 +379,7 @@ void Simulator::split_request(Request& request) {
     address.offset = first_offset;
     if (request.op == OpType::Read &&
         config_.initialization_mode != InitializationMode::Empty)
-      materialize_initialized_page(address);
+      system_.media().materialize_initialized_page(address);
     SubRequest sub;
     sub.id = next_subrequest_id_++;
     sub.parent_id = request.id;
@@ -526,10 +500,6 @@ void Simulator::run_until(SimTime until) {
   now_ = until;
 }
 
-void Simulator::materialize_initialized_page(const PhysicalAddr& address) {
-  system_.media().materialize_initialized_page(address);
-}
-
 bool Simulator::is_measured(std::uint64_t request_id) const {
   return requests_.at(request_id).measured;
 }
@@ -537,7 +507,8 @@ bool Simulator::is_measured(std::uint64_t request_id) const {
 void Simulator::record_queue_depth() {
   if (phase_ != SimulationPhase::Measure) return;
   std::uint64_t active = 0;
-  for (const auto value : active_per_stack_) active += value;
+  for (const auto value : system_.controller().execution().active_per_stack)
+    active += value;
   stats_.record_queue_depth(now_, queue_depth_[0], queue_depth_[1],
                             queue_depth_[2], queue_depth_[3], active);
 }

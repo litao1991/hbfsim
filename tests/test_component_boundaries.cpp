@@ -38,6 +38,12 @@ int main() {
   CHECK(&system.topology() == &system.media().topology());
   CHECK(&system.frontend().axi() == &system.axi());
   CHECK(&system.frontend().dlu_assembler() == &system.dlu_assembler());
+  const auto& execution = system.controller().execution();
+  CHECK(execution.active_per_die.size() == system.topology().die_count());
+  CHECK(execution.active_per_stack.size() == config.stacks);
+  CHECK(execution.dispatch_cursor_per_stack.size() == config.stacks);
+  CHECK(execution.dispatch_wake_at.size() == config.stacks);
+  CHECK(execution.program_ready.size() == config.stacks);
   CHECK(system.topology().bank_of_plane(3) == 1);
   PhysicalAddr physical{0, 0, 3, 0, 0};
   physical.bank = 1;
@@ -56,6 +62,37 @@ int main() {
   CHECK(cache.lookup(first, 10));
   CHECK(cache.lookup(third, 10));
 
+  auto& media = system.media();
+  const PhysicalAddr media_page{0, 0, 0, 0, 0};
+  media.begin_program(media_page);
+  CHECK(media.page_state(media_page) == PageState::Programming);
+  media.set_array_ready_at(media_page, 9);
+  CHECK(media.block_ready_at(media_page) == 9);
+  media.set_data_register_busy(media_page, true);
+  CHECK(media.plane(media_page).data_register_busy);
+  media.set_data_register_busy(media_page, false);
+  media.complete_program(media_page, std::nullopt, 10);
+  CHECK(media.page_state(media_page) == PageState::Valid);
+  CHECK(media.block_state(media_page) == BlockState::Open);
+  media.invalidate_page(media_page);
+  CHECK(media.page_state(media_page) == PageState::Invalid);
+  PhysicalAddr failed_page = media_page;
+  failed_page.page = 1;
+  media.fail_program(failed_page, 20);
+  CHECK(media.page_state(failed_page) == PageState::Failed);
+  CHECK(media.complete_erase(media_page) == 1);
+  CHECK(media.page_state(media_page) == PageState::Erased);
+  CHECK(media.block_state(media_page) == BlockState::Free);
+  media.begin_erase(media_page);
+  CHECK(media.block_state(media_page) == BlockState::Erasing);
+  CHECK(media.complete_erase(media_page) == 2);
+
+  PhysicalAddr hole_page = media_page;
+  hole_page.page = 1;
+  media.reserve_program_hole(media_page);
+  media.reserve_program_hole(hole_page);
+  CHECK(media.plane(media_page).blocks.at(0).next_program_page == 2);
+
   auto accepted = system.frontend().admit(
       {0, OpType::Read, 0, 64, 0}, 7, true);
   CHECK(accepted.accepted());
@@ -71,7 +108,7 @@ int main() {
   CHECK(!rejected.accepted());
   CHECK(rejected.rejection->status == HbfStatus::InvalidUserField);
 
-  Plane plane;
+  PlaneControllerState plane;
   std::unordered_map<std::uint64_t, SubRequest> requests;
   SubRequest gc;
   gc.id = 1;

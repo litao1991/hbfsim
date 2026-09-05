@@ -208,13 +208,7 @@ void Simulator::reserve_copy_hole(CopyJob& job, std::uint32_t slot) {
   mapping->reserve_hole(job.destination_stripe,
                         source.logical_base_lpn + slot);
   const auto address = mapping->address_for(job.destination_stripe, slot);
-  auto& block = plane(address).blocks.at(address.block);
-  if (block.next_program_page != address.page)
-    throw std::logic_error("copy hole violates block program order");
-  if (block.state == BlockState::Free) block.state = BlockState::Open;
-  ++block.next_program_page;
-  if (block.next_program_page == config_.pages_per_block)
-    block.state = BlockState::Closed;
+  system_.media().reserve_program_hole(address);
 }
 
 void Simulator::enqueue_copy_erases(std::uint64_t job_id, SimTime now) {

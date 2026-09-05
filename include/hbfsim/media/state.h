@@ -37,7 +37,13 @@ struct BankState {
   BankReadCache read_cache;
 };
 
-struct Plane {
+struct PlaneMediaState {
+  SimTime ready_at = 0;
+  bool data_register_busy = false;
+  std::vector<BlockMeta> blocks;
+};
+
+struct PlaneControllerState {
   static constexpr std::size_t kSourceCount = 6;
   using SourceQueues =
       std::array<std::deque<std::uint64_t>, kSourceCount>;
@@ -47,13 +53,10 @@ struct Plane {
   SourceQueues erases;
   SourceQueues refreshes;
   std::uint32_t consecutive_reads = 0;
-  SimTime ready_at = 0;
-  bool data_register_busy = false;
   bool suspend_pending = false;
   std::optional<std::uint64_t> active_subrequest;
   std::optional<std::uint64_t> suspended_subrequest;
   std::optional<std::uint64_t> cached_write;
-  std::vector<BlockMeta> blocks;
 };
 
 }  // namespace hbfsim

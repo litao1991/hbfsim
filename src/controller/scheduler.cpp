@@ -20,7 +20,7 @@ void Simulator::enqueue_subrequest(SubRequest& subrequest) {
   subrequest.ready_time = now_;
   if (config_.multi_plane_enabled && subrequest.op != OpType::Write)
     subrequest.ready_time += config_.multi_plane_setup_ns;
-  auto& target = plane(subrequest.paddr);
+  auto& target = controller_plane(subrequest.paddr);
   system_.controller().scheduler().enqueue(target, subrequest);
   if (subrequest.op == OpType::Read) {
     ++queue_depth_[0];
@@ -37,8 +37,8 @@ void Simulator::enqueue_subrequest(SubRequest& subrequest) {
   dispatch_stack(subrequest.paddr.stack, now_);
 }
 
-std::optional<std::uint64_t> Simulator::choose_next(Plane& target,
-                                                    SimTime now) const {
+std::optional<std::uint64_t> Simulator::choose_next(
+    PlaneControllerState& target, SimTime now) const {
   return system_.controller().scheduler().choose(
       target, now,
       [this](std::uint64_t id) -> const SubRequest& {
@@ -55,13 +55,14 @@ void Simulator::claim_command(const SubRequest& subrequest, SimTime now,
   system_.controller().claim_command(subrequest, now, shared_command);
 }
 
-bool Simulator::try_suspend_for_read(Plane& target, SimTime now) {
+bool Simulator::try_suspend_for_read(PlaneControllerState& target,
+                                     SimTime now) {
   if (!config_.suspend_resume_enabled ||
       system_.controller().scheduler().queues_empty(target.reads) ||
-      !target.active_subrequest || target.suspend_pending ||
-      target.data_register_busy)
+      !target.active_subrequest || target.suspend_pending)
     return false;
   auto& active = subrequests_.at(*target.active_subrequest);
+  if (media_plane(active.paddr).data_register_busy) return false;
   if (active.op != OpType::Write && active.op != OpType::Erase) return false;
   const auto next = choose_next(target, now);
   if (!next || subrequests_.at(*next).op != OpType::Read) return false;
@@ -90,7 +91,8 @@ bool Simulator::try_suspend_for_read(Plane& target, SimTime now) {
   return true;
 }
 
-bool Simulator::try_resume(Plane& target, SimTime now) {
+bool Simulator::try_resume(PlaneControllerState& target, SimTime now) {
+  auto& execution = system_.controller().execution();
   if (!target.suspended_subrequest || target.busy) return false;
   if (const auto next = choose_next(target, now);
       next && subrequests_.at(*next).op == OpType::Read)
@@ -104,9 +106,10 @@ bool Simulator::try_resume(Plane& target, SimTime now) {
   const auto die_index = static_cast<std::size_t>(sub.paddr.stack) *
                              config_.dies_per_stack +
                          sub.paddr.die;
-  if (active_per_stack_.at(sub.paddr.stack) >=
+  if (execution.active_per_stack.at(sub.paddr.stack) >=
           config_.max_active_planes_per_stack ||
-      active_per_die_.at(die_index) >= config_.max_active_planes_per_die)
+      execution.active_per_die.at(die_index) >=
+          config_.max_active_planes_per_die)
     return false;
 
   target.suspended_subrequest.reset();
@@ -115,15 +118,14 @@ bool Simulator::try_resume(Plane& target, SimTime now) {
   target.consecutive_reads = 0;
   sub.suspended = false;
   sub.array_active_since = now;
-  ++active_per_die_.at(die_index);
-  ++active_per_stack_.at(sub.paddr.stack);
+  ++execution.active_per_die.at(die_index);
+  ++execution.active_per_stack.at(sub.paddr.stack);
   start_array_tracking(sub, now);
   record_queue_depth();
   claim_command(sub, now, false);
   const auto done = now + config_.resume_ns + sub.suspended_remaining_ns;
   sub.array_completion_time = done;
-  target.ready_at = done;
-  target.blocks.at(sub.paddr.block).ready_at = done;
+  system_.media().set_array_ready_at(sub.paddr, done);
   const auto type = sub.op == OpType::Write
                         ? EventType::NandProgramDone
                         : EventType::NandEraseDone;
@@ -131,13 +133,14 @@ bool Simulator::try_resume(Plane& target, SimTime now) {
   return true;
 }
 
-bool Simulator::try_issue_cached_write(Plane& target, SimTime now) {
-  if (!config_.cache_program_enabled || target.data_register_busy ||
-      target.cached_write ||
+bool Simulator::try_issue_cached_write(PlaneControllerState& target,
+                                       SimTime now) {
+  if (!config_.cache_program_enabled || target.cached_write ||
       system_.controller().scheduler().queues_empty(target.writes) ||
       !target.active_subrequest)
     return false;
   const auto& active = subrequests_.at(*target.active_subrequest);
+  if (media_plane(active.paddr).data_register_busy) return false;
   if (active.op != OpType::Write || active.suspended) return false;
   const auto scheduled = choose_next(target, now);
   if (!scheduled) return false;
@@ -165,20 +168,21 @@ bool Simulator::try_issue_cached_write(Plane& target, SimTime now) {
 }
 
 void Simulator::dispatch_stack(std::uint32_t stack, SimTime now) {
+  auto& execution = system_.controller().execution();
   const auto planes_per_stack =
       static_cast<std::uint64_t>(config_.dies_per_stack) *
       config_.planes_per_die;
   bool progress = true;
   while (progress) {
     progress = false;
-    const auto cursor = dispatch_cursor_per_stack_.at(stack);
+    const auto cursor = execution.dispatch_cursor_per_stack.at(stack);
     for (std::uint64_t step = 0; step < planes_per_stack; ++step) {
       const auto local = (cursor + step) % planes_per_stack;
       const auto die_id = local / config_.planes_per_die;
       const auto plane_id = local % config_.planes_per_die;
       const PhysicalAddr address{stack, static_cast<std::uint32_t>(die_id),
                                  static_cast<std::uint32_t>(plane_id)};
-      auto& candidate = plane(address);
+      auto& candidate = controller_plane(address);
       if (candidate.busy) {
         if (try_suspend_for_read(candidate, now) ||
             try_issue_cached_write(candidate, now))
@@ -208,9 +212,9 @@ void Simulator::dispatch_stack(std::uint32_t stack, SimTime now) {
                                  config_.dies_per_stack +
                              die_id;
       if (needs_array_now &&
-          (active_per_stack_.at(stack) >=
+          (execution.active_per_stack.at(stack) >=
                config_.max_active_planes_per_stack ||
-           active_per_die_.at(die_index) >=
+           execution.active_per_die.at(die_index) >=
                config_.max_active_planes_per_die))
         continue;
 
@@ -225,29 +229,30 @@ void Simulator::dispatch_stack(std::uint32_t stack, SimTime now) {
              ++peer_plane) {
           if (peer_plane == batch_address.plane) continue;
           PhysicalAddr peer_address{stack, batch_address.die, peer_plane};
-          auto& peer = plane(peer_address);
+          auto& peer = controller_plane(peer_address);
           if (peer.busy || peer.suspended_subrequest) continue;
           const auto peer_next = choose_next(peer, now);
           if (!peer_next) continue;
           const auto& peer_sub = subrequests_.at(*peer_next);
-          const auto& peer_block = peer.blocks.at(peer_sub.paddr.block);
+          const auto& peer_media = media_plane(peer_sub.paddr);
+          const auto& peer_block = peer_media.blocks.at(peer_sub.paddr.block);
           const auto peer_ready =
-              std::max({peer_sub.ready_time, peer.ready_at,
+              std::max({peer_sub.ready_time, peer_media.ready_at,
                         peer_block.ready_at, die(peer_sub.paddr).ready_at});
           if (peer_sub.op != batch_op ||
               peer_sub.paddr.block != batch_address.block ||
               peer_sub.paddr.page != batch_address.page ||
               peer_ready > now ||
-              active_per_stack_.at(stack) >=
+              execution.active_per_stack.at(stack) >=
                   config_.max_active_planes_per_stack ||
-              active_per_die_.at(die_index) >=
+              execution.active_per_die.at(die_index) >=
                   config_.max_active_planes_per_die)
             continue;
           issue(*peer_next, now, true);
           ++issued;
         }
       }
-      dispatch_cursor_per_stack_.at(stack) =
+      execution.dispatch_cursor_per_stack.at(stack) =
           static_cast<std::uint32_t>((local + 1) % planes_per_stack);
       progress = true;
       break;
@@ -256,18 +261,18 @@ void Simulator::dispatch_stack(std::uint32_t stack, SimTime now) {
 }
 
 void Simulator::release_array(const SubRequest& subrequest) {
+  auto& execution = system_.controller().execution();
   const auto die_index = static_cast<std::size_t>(subrequest.paddr.stack) *
                              config_.dies_per_stack +
                          subrequest.paddr.die;
-  --active_per_die_.at(die_index);
-  --active_per_stack_.at(subrequest.paddr.stack);
+  --execution.active_per_die.at(die_index);
+  --execution.active_per_stack.at(subrequest.paddr.stack);
   record_queue_depth();
 }
 
 void Simulator::begin_data_in(std::uint64_t id, SimTime now, bool cached) {
   auto& sub = subrequests_.at(id);
-  auto& target = plane(sub.paddr);
-  target.data_register_busy = true;
+  system_.media().set_data_register_busy(sub.paddr, true);
   const auto setup = config_.t_adl_ns +
                      (cached ? config_.cache_program_setup_ns : 0);
   const auto fabric = reserve_fabric(sub.paddr, now + setup, sub.bytes,
@@ -279,10 +284,11 @@ void Simulator::begin_data_in(std::uint64_t id, SimTime now, bool cached) {
 }
 
 void Simulator::issue(std::uint64_t id, SimTime now, bool shared_command) {
+  auto& execution = system_.controller().execution();
   auto& sub = subrequests_.at(id);
   if (sub.op != OpType::Write && !system_.mapper().validate_generation(sub.paddr))
     throw std::runtime_error("STALE_GENERATION");
-  auto& target = plane(sub.paddr);
+  auto& target = controller_plane(sub.paddr);
   system_.controller().scheduler().dequeue(target, sub);
   if (sub.op == OpType::Read) {
     --queue_depth_[0];
@@ -304,7 +310,7 @@ void Simulator::issue(std::uint64_t id, SimTime now, bool shared_command) {
     return;
   }
 
-  auto& block = target.blocks.at(sub.paddr.block);
+  const auto& block = media_plane(sub.paddr).blocks.at(sub.paddr.block);
   if (sub.op == OpType::Read) {
     if (config_.strict_media_validation &&
         (block.state == BlockState::Free || block.state == BlockState::Bad ||
@@ -326,7 +332,7 @@ void Simulator::issue(std::uint64_t id, SimTime now, bool shared_command) {
                                std::to_string(bitmap_test(
                                    block.valid_bitmap, sub.paddr.page)));
     }
-    set_transient_page_state(sub.paddr, PageState::Reading);
+    system_.media().begin_read(sub.paddr);
   } else if (sub.op == OpType::Erase) {
     if (block.bad || block.state == BlockState::Bad ||
         block.state == BlockState::Erasing) {
@@ -341,9 +347,7 @@ void Simulator::issue(std::uint64_t id, SimTime now, bool shared_command) {
       }
       throw std::runtime_error("ERASE_ON_BAD_OR_ERASING_BLOCK");
     }
-    system_.media().mark_erased(sub.paddr);
-    system_.media().invalidate_read_cache_block(sub.paddr);
-    block.state = BlockState::Erasing;
+    system_.media().begin_erase(sub.paddr);
   } else if (block.bad || block.state == BlockState::Bad ||
              block.state == BlockState::Erasing) {
     throw std::runtime_error("REFRESH_ON_BAD_OR_ERASING_BLOCK");
@@ -352,8 +356,8 @@ void Simulator::issue(std::uint64_t id, SimTime now, bool shared_command) {
   const auto die_index = static_cast<std::size_t>(sub.paddr.stack) *
                              config_.dies_per_stack +
                          sub.paddr.die;
-  ++active_per_die_.at(die_index);
-  ++active_per_stack_.at(sub.paddr.stack);
+  ++execution.active_per_die.at(die_index);
+  ++execution.active_per_stack.at(sub.paddr.stack);
   start_array_tracking(sub, now);
   record_queue_depth();
   target.active_subrequest = sub.id;
@@ -369,13 +373,13 @@ void Simulator::issue(std::uint64_t id, SimTime now, bool shared_command) {
   }
   const auto done = now + latency;
   sub.array_completion_time = done;
-  target.ready_at = done;
-  block.ready_at = done;
+  system_.media().set_array_ready_at(sub.paddr, done);
   schedule(done, completion, sub.parent_id, sub.id);
 }
 
 void Simulator::start_program(std::uint64_t id, SimTime now,
                               bool shared_command) {
+  auto& execution = system_.controller().execution();
   auto& sub = subrequests_.at(id);
   if (now > sub.ready_time)
     sub.latency.nand_command_wait_ns += now - sub.ready_time;
@@ -383,9 +387,9 @@ void Simulator::start_program(std::uint64_t id, SimTime now,
     sub.old_paddr = system_.mapper().lookup(sub.lpn);
   if (!system_.mapper().validate_generation(sub.paddr))
     throw std::runtime_error("STALE_GENERATION");
-  auto& target = plane(sub.paddr);
-  auto& block = target.blocks.at(sub.paddr.block);
-  system_.media().invalidate_read_cache_page(sub.paddr);
+  auto& target = controller_plane(sub.paddr);
+  const auto& media = media_plane(sub.paddr);
+  auto& block = media.blocks.at(sub.paddr.block);
   if (target.cached_write == sub.id) target.cached_write.reset();
   if (block.bad || block.state == BlockState::Bad ||
       block.state == BlockState::Erasing) {
@@ -407,24 +411,21 @@ void Simulator::start_program(std::uint64_t id, SimTime now,
       block.state != BlockState::Free && system_.mapper().stripe_mapping() == nullptr;
   if (auto_erase) {
     sub.page0_auto_erase = true;
-    system_.media().mark_erased(sub.paddr);
-    system_.media().invalidate_read_cache_block(sub.paddr);
-    block.state = BlockState::Erasing;
+    system_.media().begin_erase(sub.paddr);
     target.busy = true;
     target.active_subrequest = sub.id;
     claim_command(sub, now, shared_command);
     const auto die_index = static_cast<std::size_t>(sub.paddr.stack) *
                                config_.dies_per_stack +
                            sub.paddr.die;
-    ++active_per_die_.at(die_index);
-    ++active_per_stack_.at(sub.paddr.stack);
+    ++execution.active_per_die.at(die_index);
+    ++execution.active_per_stack.at(sub.paddr.stack);
     start_array_tracking(sub, now);
     record_queue_depth();
     sub.array_active_since = now;
     const auto done = now + config_.erase_ns;
     sub.array_completion_time = done;
-    target.ready_at = done;
-    block.ready_at = done;
+    system_.media().set_array_ready_at(sub.paddr, done);
     schedule(done, EventType::NandAutoEraseDone, sub.parent_id, sub.id);
     if (is_measured(sub.parent_id)) stats_.record_page0_auto_erase();
     return;
@@ -457,38 +458,36 @@ void Simulator::start_program(std::uint64_t id, SimTime now,
 
   target.busy = true;
   target.active_subrequest = sub.id;
-  if (!sub.auto_erase_failed && !sub.auto_erase_retired &&
-      block.state == BlockState::Free)
-    block.state = BlockState::Open;
-  set_transient_page_state(sub.paddr, PageState::Programming);
+  system_.media().begin_program(sub.paddr);
   claim_command(sub, now, shared_command);
   const auto die_index = static_cast<std::size_t>(sub.paddr.stack) *
                              config_.dies_per_stack +
                          sub.paddr.die;
-  ++active_per_die_.at(die_index);
-  ++active_per_stack_.at(sub.paddr.stack);
+  ++execution.active_per_die.at(die_index);
+  ++execution.active_per_stack.at(sub.paddr.stack);
   start_array_tracking(sub, now);
   record_queue_depth();
   sub.array_active_since = now;
   const auto done = now + config_.program_ns;
   sub.array_completion_time = done;
-  target.ready_at = done;
-  block.ready_at = done;
+  system_.media().set_array_ready_at(sub.paddr, done);
   schedule(done, EventType::NandProgramDone, sub.parent_id, sub.id);
 }
 
 void Simulator::dispatch_ready_programs(std::uint32_t stack, SimTime now) {
-  auto& ready_queue = program_ready_.at(stack);
+  auto& execution = system_.controller().execution();
+  auto& ready_queue = execution.program_ready.at(stack);
   bool progress = true;
   while (progress && !ready_queue.empty() &&
-         active_per_stack_.at(stack) <
+         execution.active_per_stack.at(stack) <
              config_.max_active_planes_per_stack) {
     progress = false;
     for (auto it = ready_queue.begin(); it != ready_queue.end(); ++it) {
       auto& sub = subrequests_.at(*it);
-      auto& target = plane(sub.paddr);
+      auto& target = controller_plane(sub.paddr);
+      const auto& media = media_plane(sub.paddr);
       if (target.active_subrequest || target.suspended_subrequest ||
-          target.data_register_busy)
+          media.data_register_busy)
         continue;
       const auto ready = command_ready_time(sub);
       if (ready > now) {
@@ -498,7 +497,7 @@ void Simulator::dispatch_ready_programs(std::uint32_t stack, SimTime now) {
       const auto die_index = static_cast<std::size_t>(stack) *
                                  config_.dies_per_stack +
                              sub.paddr.die;
-      if (active_per_die_.at(die_index) >=
+      if (execution.active_per_die.at(die_index) >=
           config_.max_active_planes_per_die)
         continue;
 
@@ -512,11 +511,12 @@ void Simulator::dispatch_ready_programs(std::uint32_t stack, SimTime now) {
              peer != ready_queue.end() &&
              issued < config_.max_multi_plane_width;) {
           auto& peer_sub = subrequests_.at(*peer);
-          auto& peer_plane = plane(peer_sub.paddr);
+          auto& peer_plane = controller_plane(peer_sub.paddr);
+          const auto& peer_media = media_plane(peer_sub.paddr);
           auto& peer_block =
-              peer_plane.blocks.at(peer_sub.paddr.block);
+              peer_media.blocks.at(peer_sub.paddr.block);
           const auto peer_ready = std::max(
-              {peer_sub.ready_time, peer_plane.ready_at,
+              {peer_sub.ready_time, peer_media.ready_at,
                peer_block.ready_at, die(peer_sub.paddr).ready_at});
           if (peer_sub.paddr.die != first_address.die ||
               peer_sub.paddr.plane == first_address.plane ||
@@ -524,10 +524,10 @@ void Simulator::dispatch_ready_programs(std::uint32_t stack, SimTime now) {
               peer_sub.paddr.page != first_address.page ||
               peer_plane.active_subrequest ||
               peer_plane.suspended_subrequest ||
-              peer_plane.data_register_busy || peer_ready > now ||
-              active_per_stack_.at(stack) >=
+              peer_media.data_register_busy || peer_ready > now ||
+              execution.active_per_stack.at(stack) >=
                   config_.max_active_planes_per_stack ||
-              active_per_die_.at(die_index) >=
+              execution.active_per_die.at(die_index) >=
                   config_.max_active_planes_per_die) {
             ++peer;
             continue;

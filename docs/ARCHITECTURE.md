@@ -1,4 +1,4 @@
-# HBFSim v0.4.1 架构设计
+# HBFSim v0.4.3 架构设计
 
 ## 1. 目标与范围
 
@@ -48,6 +48,12 @@ Stripe Mapping、Copy GC 和 Migration Recovery 等研究扩展。Profile 是模
 `HbfSystem` 是设备模型的唯一组合根，拥有 `ProtocolFrontend`、`BaseDieController`、
 `NandMediaSystem`、Mapper、Reliability、CopyEngine、Host GC 与 Refresh。`Simulator`
 只保留时间/事件、活动请求生命周期、仿真阶段和统计协调，不再保存指向子组件的过渡引用。
+v0.4.2 进一步将 active-plane credits、dispatch cursor/wakeup 与 program-ready
+队列迁入 `BaseDieController::ControllerExecutionState`；事件队列仍仅由
+`Simulator` 推进。v0.4.3 将每 Plane 拆分为 `PlaneControllerState`（队列、active/
+suspended/cached command）和 `PlaneMediaState`（block/page bitmap、array ready、
+data register）。所有可持久化 NAND 状态转换经由 `NandMediaSystem`，而不是由
+kernel 直接写入。
 
 ## 3. 源码模块
 

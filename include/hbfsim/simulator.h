@@ -13,7 +13,6 @@
 #include "hbfsim/stats/stats.h"
 #include <array>
 #include <cstdint>
-#include <deque>
 #include <limits>
 #include <optional>
 #include <unordered_map>
@@ -56,7 +55,8 @@ class Simulator {
   void enqueue_subrequest(SubRequest& subrequest);
   void dispatch_stack(std::uint32_t stack, SimTime now);
   void schedule_dispatch_wake(std::uint32_t stack, SimTime when);
-  std::optional<std::uint64_t> choose_next(Plane& plane, SimTime now) const;
+  std::optional<std::uint64_t> choose_next(
+      PlaneControllerState& plane, SimTime now) const;
   void issue(std::uint64_t subrequest_id, SimTime now,
              bool shared_command = false);
   void begin_data_in(std::uint64_t subrequest_id, SimTime now,
@@ -64,9 +64,9 @@ class Simulator {
   void start_program(std::uint64_t subrequest_id, SimTime now,
                      bool shared_command = false);
   void dispatch_ready_programs(std::uint32_t stack, SimTime now);
-  bool try_issue_cached_write(Plane& plane, SimTime now);
-  bool try_suspend_for_read(Plane& plane, SimTime now);
-  bool try_resume(Plane& plane, SimTime now);
+  bool try_issue_cached_write(PlaneControllerState& plane, SimTime now);
+  bool try_suspend_for_read(PlaneControllerState& plane, SimTime now);
+  bool try_resume(PlaneControllerState& plane, SimTime now);
   void release_array(const SubRequest& subrequest);
   void finish_program(SubRequest& subrequest, SimTime now);
   LinkResource::Reservation reserve_host(const HostRoute& route,
@@ -79,8 +79,10 @@ class Simulator {
   void complete_subrequest(std::uint64_t subrequest_id, SimTime now);
   void publish_response(const Request& request);
   std::uint32_t plane_index(const PhysicalAddr& paddr) const;
-  Plane& plane(const PhysicalAddr& paddr);
-  const Plane& plane(const PhysicalAddr& paddr) const;
+  const PlaneMediaState& media_plane(const PhysicalAddr& paddr) const;
+  PlaneControllerState& controller_plane(const PhysicalAddr& paddr);
+  const PlaneControllerState& controller_plane(
+      const PhysicalAddr& paddr) const;
   DieState& die(const PhysicalAddr& paddr);
   const DieState& die(const PhysicalAddr& paddr) const;
   BankState& bank(const PhysicalAddr& paddr);
@@ -88,9 +90,6 @@ class Simulator {
   SimTime command_ready_time(const SubRequest& subrequest) const;
   void claim_command(const SubRequest& subrequest, SimTime now,
                      bool shared_command);
-  void set_transient_page_state(const PhysicalAddr& paddr, PageState state);
-  void clear_transient_page_state(const PhysicalAddr& paddr);
-  void materialize_initialized_page(const PhysicalAddr& paddr);
   void retire_block(const PhysicalAddr& paddr);
   bool is_measured(std::uint64_t request_id) const;
   void record_queue_depth();
@@ -140,11 +139,6 @@ class Simulator {
   std::optional<SimTime> next_trace_arrival_;
   std::unordered_map<std::uint64_t, Request> requests_;
   std::unordered_map<std::uint64_t, SubRequest> subrequests_;
-  std::vector<std::uint32_t> active_per_die_;
-  std::vector<std::uint32_t> active_per_stack_;
-  std::vector<std::uint32_t> dispatch_cursor_per_stack_;
-  std::vector<SimTime> dispatch_wake_at_;
-  std::vector<std::deque<std::uint64_t>> program_ready_;
   std::vector<ProgramFailureNotice> program_failure_notices_;
   std::vector<HbfResponse> responses_;
   std::array<std::uint64_t, 4> queue_depth_{};
