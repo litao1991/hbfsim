@@ -196,6 +196,26 @@ std::uint32_t Simulator::block_erase_count(
   return system_.media().block_erase_count(address);
 }
 
+ReducedCapacityReport Simulator::reduced_capacity() const {
+  ReducedCapacityReport report;
+  report.retired_blocks = stats_.retired_blocks();
+  report.retired_stripes = stats_.retired_stripes();
+  report.usable_physical_capacity_bytes =
+      stats_.usable_physical_capacity_bytes();
+  if (const auto* mapping = system_.mapper().stripe_mapping()) {
+    report.usable_host_capacity_bytes =
+        static_cast<std::uint64_t>(mapping->usable_stripe_count()) *
+        mapping->stripe_capacity() * config_.page_size;
+    report.retired_stripe_bitmap.reserve(mapping->total_stripe_count());
+    for (std::uint64_t id = 0; id < mapping->total_stripe_count(); ++id)
+      report.retired_stripe_bitmap.push_back(
+          mapping->physical_stripe_retired(id));
+  } else {
+    report.usable_host_capacity_bytes = report.usable_physical_capacity_bytes;
+  }
+  return report;
+}
+
 void Simulator::retire_block(const PhysicalAddr& address) {
   const bool newly_bad = system_.media().retire_block(address);
   if (newly_bad) stats_.record_retired_block();

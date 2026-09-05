@@ -1,8 +1,8 @@
-# HBFSim v0.5.5
+# HBFSim v0.6.4
 
 HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style NAND stacks. It models performance-relevant resources rather than packet- or bit-level hardware details.
 
-## Included through v0.5.5
+## Included through v0.6.4
 
 - v0.4.1 is a behavior-preserving ownership refactor: public declarations are split into narrow headers, `HbfSystem` composes protocol/controller/media/extension components, and `Simulator` no longer owns device media, cache, interconnect, or CopyEngine state.
 - v0.4.2 moves controller execution state (active-plane credits, dispatch cursor/wakeup, and program-ready queues) from `Simulator` into `BaseDieController`, preserving the v0.4.1 model behavior.
@@ -12,6 +12,7 @@ HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style
 - v0.5.2 makes Read Retry host-driven in HBF/AI profiles. An uncorrectable read returns `UncorrectableEccRetryRequired` with its next retry stage; the Host resubmits the Read with that stage. The research profile retains its automatic retry compatibility path.
 - v0.5.3 records a Host-facing `ReplayPlan` for every Host-managed program failure, carrying stripe generation, failed page/slot, committed prefix, and replay payload size without silently treating replay as research Copy GC.
 - v0.5.4 models Read Disturb and Retention Age in RBER and can trigger Refresh from a read-count threshold. v0.5.5 adds zone-level write/erase accounting and Host-directed logical-to-physical Zone remap metadata, independent of Stripe Mapping.
+- v0.6.0–v0.6.4 closes the Host-managed media-management loops: `start_host_replay()` executes Host-payload sequential replay; Zone remap now selects physical Stripe placement; wear policy uses MAX/AVG/variance PEC and launches Host rewrites; Spec refresh is Host-triggered; `reduced_capacity()` exposes retirement bitmap/capacity state.
 
 - Explicit `media_research`, `hbf_v0_7`, and `ai_system` simulation profiles separate compatibility experiments from the specification-oriented path. HBF/AI profiles default research extensions off.
 - `HbfSystem` is now the device-model composition root for mapping, routing, reliability, Host GC, and Refresh services; `Simulator` retains time and event ownership.
@@ -54,7 +55,7 @@ HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style
 - `ResourceTracker` accumulates Array/Fabric/Host occupancy and overlap online with memory bounded by topology. Queue depth is interval-sampled rather than retained at every state change.
 - `tools/experiment_runner.py` expands Cartesian parameter sweeps, runs them in parallel, records Git SHA and SHA-256 hashes, preserves input and fully resolved configs, aggregates metrics, and creates dependency-free SVG plots.
 
-Explicit in-place Refresh remains available as a maintenance operation. Automatic Refresh uses copy/remap/erase semantics. v0.2.7 added a repeatable model-validation gate; v0.3.0 added configurable Parallelism Groups while retaining full-device stripes by default. Wear leveling, temperature-aware retention, detailed voltage-threshold distributions, HBM overlap, Host-driven Retry/Replay, and packet-level UCIe remain outside v0.5.1.
+Explicit in-place Refresh remains available as a maintenance operation. In Spec profiles, retention/read-disturb refresh is reported to the Host and performed only by Host-payload rewrite. v0.2.7 added a repeatable model-validation gate; v0.3.0 added configurable Parallelism Groups while retaining full-device stripes by default. Temperature-aware retention, detailed voltage-threshold distributions, HBM overlap, and packet-level UCIe remain outside v0.6.4.
 
 The reliability model is command-level rather than bit-level: each read samples a raw error count from a Poisson distribution, ECC corrects counts within `ecc_correctable_bits`, and each retry multiplies BER by `retry_ber_multiplier`. A failed program consumes its sequential-program position but does not replace the previous L2P mapping.
 

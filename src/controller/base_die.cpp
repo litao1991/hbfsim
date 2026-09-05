@@ -53,17 +53,20 @@ const PlaneControllerState& BaseDieController::plane_state(
 }
 
 int SchedulingPolicy::base_priority(const SubRequest& request) const {
-  if (request.source == TransactionSource::Recovery && request.critical)
+  if ((request.source == TransactionSource::Recovery ||
+       request.source == TransactionSource::HostReplay) && request.critical)
     return 0;
   if (request.source == TransactionSource::User &&
       request.op == OpType::Read)
     return 1;
-  if (request.source == TransactionSource::Recovery) return 2;
+  if (request.source == TransactionSource::Recovery ||
+      request.source == TransactionSource::HostReplay) return 2;
   if (request.source == TransactionSource::User ||
       request.source == TransactionSource::Mapping)
     return 3;
   if (request.source == TransactionSource::Maintenance ||
-      request.source == TransactionSource::Refresh)
+      request.source == TransactionSource::Refresh ||
+      request.source == TransactionSource::HostRefresh)
     return 4;
   return 5;
 }

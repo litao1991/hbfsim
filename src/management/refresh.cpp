@@ -95,6 +95,9 @@ void Simulator::schedule_refresh_check(SimTime when) {
 void Simulator::maybe_start_automatic_refresh(SimTime now) {
   auto* mapping = system_.mapper().stripe_mapping();
   if (!mapping || !config_.automatic_refresh_enabled) return;
+  // Spec profiles report the condition through refresh_required(); the Host
+  // explicitly supplies the rewrite payload via start_host_refresh().
+  if (config_.simulation_profile != SimulationProfile::MediaResearch) return;
   const auto result = system_.refresh_manager().poll(
       *mapping, now, active_copy_jobs(TransactionSource::Refresh));
   const bool measured = phase_ != SimulationPhase::Warmup;

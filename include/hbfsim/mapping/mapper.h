@@ -5,6 +5,7 @@
 #include "hbfsim/media/topology.h"
 #include "hbfsim/protocol/channel.h"
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 
@@ -32,6 +33,10 @@ class AddressMapper {
   StripeMappingTable* stripe_mapping() { return stripes_.get(); }
   const StripeMappingTable* stripe_mapping() const { return stripes_.get(); }
   bool validate_generation(const PhysicalAddr& paddr) const;
+  void set_zone_resolver(std::uint32_t zone_count,
+                         std::function<std::uint32_t(std::uint64_t)> resolver) {
+    if (stripes_) stripes_->set_zone_resolver(zone_count, std::move(resolver));
+  }
   const HbfChannelDomain& channels() const { return *channels_; }
   const NandTopology& topology() const { return *topology_; }
 

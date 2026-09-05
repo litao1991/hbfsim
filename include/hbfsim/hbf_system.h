@@ -7,6 +7,7 @@
 #include "hbfsim/management/host_gc.h"
 #include "hbfsim/management/refresh.h"
 #include "hbfsim/management/zones.h"
+#include "hbfsim/management/wear_level.h"
 #include "hbfsim/mapping/mapper.h"
 #include "hbfsim/media/nand_media.h"
 #include "hbfsim/media/reliability.h"
@@ -72,6 +73,10 @@ class HbfSystem {
   const RefreshManager& refresh_manager() const { return refresh_manager_; }
   ZoneManager& zones() { return zones_; }
   const ZoneManager& zones() const { return zones_; }
+  HostWearLevelManager& wear_level_manager() { return wear_level_manager_; }
+  const HostWearLevelManager& wear_level_manager() const {
+    return wear_level_manager_;
+  }
 
  private:
   SimulationProfile profile_ = SimulationProfile::MediaResearch;
@@ -91,6 +96,7 @@ class HbfSystem {
   HostGcManager host_gc_manager_;
   RefreshManager refresh_manager_;
   ZoneManager zones_;
+  HostWearLevelManager wear_level_manager_;
 };
 
 }  // namespace hbfsim

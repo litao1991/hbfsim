@@ -15,6 +15,8 @@
 #include "hbfsim/kernel/event.h"
 #include "hbfsim/management/host_gc.h"
 #include "hbfsim/management/refresh.h"
+#include "hbfsim/management/reduced_capacity.h"
+#include "hbfsim/management/wear_level.h"
 #include "hbfsim/mapping/mapper.h"
 #include "hbfsim/mapping/stripe_mapping.h"
 #include "hbfsim/media/nand_media.h"

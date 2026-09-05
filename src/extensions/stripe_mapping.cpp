@@ -131,8 +131,18 @@ StripeId StripeMappingTable::allocate_internal(std::uint64_t base,
   if (free_stripes_.empty())
     throw std::runtime_error("NO_FREE_PHYSICAL_STRIPE");
 
-  const auto physical = free_stripes_.front();
-  free_stripes_.pop_front();
+  auto selected = free_stripes_.begin();
+  if (zone_resolver_ && zone_count_ != 0) {
+    const auto desired_zone = zone_resolver_(base);
+    if (desired_zone >= zone_count_)
+      throw std::logic_error("ZONE_RESOLVER_RETURNED_INVALID_ZONE");
+    selected = std::find_if(free_stripes_.begin(), free_stripes_.end(),
+        [&](std::uint64_t physical) { return physical % zone_count_ == desired_zone; });
+    if (selected == free_stripes_.end())
+      throw std::runtime_error("NO_FREE_PHYSICAL_STRIPE_IN_ZONE");
+  }
+  const auto physical = *selected;
+  free_stripes_.erase(selected);
   auto& generation = generations_.at(physical);
   if (generation == std::numeric_limits<std::uint32_t>::max())
     throw std::overflow_error("STRIPE_GENERATION_EXHAUSTED");
@@ -251,7 +261,15 @@ PhysicalAddr StripeMappingTable::preview_program(std::uint64_t lpn) const {
     return preview_for(it->second, lpn);
   if (lpn != base) throw std::runtime_error("STRIPE_WRITE_ORDER_VIOLATION");
   if (free_stripes_.empty()) throw std::runtime_error("NO_FREE_PHYSICAL_STRIPE");
-  const auto physical = free_stripes_.front();
+  auto selected = free_stripes_.begin();
+  if (zone_resolver_ && zone_count_ != 0) {
+    const auto desired_zone = zone_resolver_(base);
+    selected = std::find_if(free_stripes_.begin(), free_stripes_.end(),
+        [&](std::uint64_t physical) { return physical % zone_count_ == desired_zone; });
+    if (selected == free_stripes_.end())
+      throw std::runtime_error("NO_FREE_PHYSICAL_STRIPE_IN_ZONE");
+  }
+  const auto physical = *selected;
   if (generations_.at(physical) ==
       std::numeric_limits<std::uint32_t>::max())
     throw std::overflow_error("STRIPE_GENERATION_EXHAUSTED");

@@ -69,6 +69,7 @@ struct SubRequest {
   PhysicalAddr paddr;
   std::optional<PhysicalAddr> old_paddr;
   std::optional<std::uint64_t> copy_job_id;
+  std::optional<std::uint64_t> host_replay_job_id;
   std::optional<std::uint32_t> copy_slot;
   SimTime arrival_time = 0;
   SimTime enqueue_time = 0;

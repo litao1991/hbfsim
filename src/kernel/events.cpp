@@ -17,6 +17,7 @@ void Simulator::complete_subrequest(std::uint64_t id, SimTime now) {
   sub.complete_time = now;
   const auto parent_id = sub.parent_id;
   const auto copy_job_id = sub.copy_job_id;
+  const auto host_replay_job_id = sub.host_replay_job_id;
   const auto copy_slot = sub.copy_slot;
   const auto completed_op = sub.op;
   const auto subrequest_failed = sub.failed;
@@ -59,6 +60,9 @@ void Simulator::complete_subrequest(std::uint64_t id, SimTime now) {
     if (internal && copy_job_id)
       handle_copy_completion(*copy_job_id, copy_slot, completed_op,
                              subrequest_failed, now);
+    if (internal && host_replay_job_id && copy_slot)
+      handle_host_replay_completion(*host_replay_job_id, *copy_slot,
+                                    completed_op, subrequest_failed, now);
   }
 }
 
@@ -267,7 +271,7 @@ void Simulator::handle(const Event& event) {
         retire_block(sub.paddr);
       } else {
         const auto erase_count = system_.media().complete_erase(sub.paddr);
-        system_.zones().record_erase(sub.lpn);
+        system_.zones().record_block_erase(sub.lpn, erase_count);
         system_.mapper().on_erase(sub.paddr);
         if (config_.max_erase_cycles != 0 &&
             erase_count >= config_.max_erase_cycles) {
@@ -325,7 +329,18 @@ void Simulator::handle(const Event& event) {
         if (config_.mapping_policy == MappingPolicy::HostManaged) {
           failure_notice = system_.mapper().fail_write(sub.lpn, sub.paddr);
           program_failure_notices_.push_back(*failure_notice);
-          system_.replay_manager().record(*failure_notice, config_.page_size);
+          if (sub.host_replay_job_id) {
+            const auto& job = system_.replay_manager().jobs().at(
+                *sub.host_replay_job_id);
+            const auto& source = system_.mapper().stripe_mapping()->descriptor(
+                job.source_stripe);
+            system_.replay_manager().record(
+                job.source_stripe, job.slot_limit - 1, source.valid_slots,
+                sub.paddr, static_cast<std::uint64_t>(job.slot_limit) *
+                               config_.page_size);
+          } else {
+            system_.replay_manager().record(*failure_notice, config_.page_size);
+          }
         }
         sub.failed = true;
         sub.status =

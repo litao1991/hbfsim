@@ -222,8 +222,10 @@ void Simulator::enqueue_copy_erases(std::uint64_t job_id, SimTime now) {
 
 void Simulator::enqueue_stripe_erases(
     const StripeId& stripe, TransactionSource source, bool measured,
-    std::optional<std::uint64_t> copy_job_id, SimTime now) {
+    std::optional<std::uint64_t> copy_job_id, SimTime now,
+    std::optional<std::uint64_t> host_replay_job_id) {
   auto* mapping = system_.mapper().stripe_mapping();
+  const auto logical_base = mapping->descriptor(stripe).logical_base_lpn;
   std::vector<PhysicalAddr> blocks;
   blocks.reserve(mapping->stripe_width());
   for (std::uint32_t lane = 0; lane < mapping->stripe_width(); ++lane)
@@ -249,10 +251,15 @@ void Simulator::enqueue_stripe_erases(
     subrequest.parent_id = request.id;
     subrequest.op = OpType::Erase;
     subrequest.source = source;
+    subrequest.lpn = logical_base;
     subrequest.paddr = address;
     subrequest.arrival_time = now;
     subrequest.host_route = request.host_route;
     subrequest.copy_job_id = copy_job_id;
+    subrequest.host_replay_job_id = host_replay_job_id;
+    // Erase completion uses a slot token only to enter the host replay
+    // completion path; erase slots have no page identity.
+    if (host_replay_job_id) subrequest.copy_slot = 0;
     subrequest.latency.host_command_wait_ns = request.host_command_wait_ns;
     subrequest.latency.host_command_service_ns =
         request.host_command_service_ns;

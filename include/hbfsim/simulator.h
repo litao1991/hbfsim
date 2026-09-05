@@ -9,6 +9,7 @@
 #include "hbfsim/kernel/event.h"
 #include "hbfsim/media/state.h"
 #include "hbfsim/media/nand_media.h"
+#include "hbfsim/management/reduced_capacity.h"
 #include "hbfsim/protocol/request.h"
 #include "hbfsim/stats/stats.h"
 #include <array>
@@ -47,12 +48,25 @@ class Simulator {
     return system_.replay_manager().plans();
   }
   std::uint64_t start_host_gc(std::uint64_t logical_addr);
+  // The caller asserts it can reconstruct every non-hole page described by
+  // the plan.  Payload bytes are timed on the host link but not stored.
+  std::uint64_t start_host_replay(std::uint64_t replay_plan_id);
+  std::uint64_t start_host_rewrite(std::uint64_t logical_addr);
+  std::uint64_t start_host_refresh(std::uint64_t logical_addr) {
+    return start_host_rewrite(logical_addr);
+  }
+  std::optional<RefreshDecision> refresh_required() const;
+  std::optional<WearLevelPlan> start_host_wear_leveling();
+  std::size_t active_host_replay_jobs() const {
+    return system_.replay_manager().jobs().size();
+  }
   std::uint64_t start_refresh(std::uint64_t logical_addr);
   void invalidate_host_page(std::uint64_t logical_addr);
   void remap_zone(std::uint32_t logical_zone, std::uint32_t physical_zone) {
     system_.zones().remap(logical_zone, physical_zone);
   }
   std::size_t active_copy_jobs() const { return system_.copy_engine().size(); }
+  ReducedCapacityReport reduced_capacity() const;
 
  private:
   void schedule(SimTime when, EventType type, std::uint64_t request_id,
@@ -132,12 +146,21 @@ class Simulator {
   void enqueue_stripe_erases(const StripeId& stripe,
                              TransactionSource source, bool measured,
                              std::optional<std::uint64_t> copy_job_id,
-                             SimTime now);
+                             SimTime now,
+                             std::optional<std::uint64_t> host_replay_job_id =
+                                 std::nullopt);
   void restart_copy_job(std::uint64_t job_id, SimTime now);
   void finish_copy_job(std::uint64_t job_id, SimTime now, bool failed);
   void start_ready_recoveries(SimTime now);
   void reset_copy_attempt(CopyJob& job);
   void handle_copy_failure_drain(std::uint64_t job_id, SimTime now);
+  void enqueue_host_replay_program(std::uint64_t job_id,
+                                   std::uint32_t slot, SimTime now);
+  void advance_host_replay(std::uint64_t job_id, SimTime now);
+  void handle_host_replay_completion(std::uint64_t job_id,
+                                     std::uint32_t slot, OpType op,
+                                     bool failed, SimTime now);
+  void enqueue_host_replay_erases(std::uint64_t job_id, SimTime now);
 
   Config config_;
   HbfSystem system_;

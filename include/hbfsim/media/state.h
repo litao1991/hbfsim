@@ -46,7 +46,7 @@ struct PlaneMediaState {
 };
 
 struct PlaneControllerState {
-  static constexpr std::size_t kSourceCount = 6;
+  static constexpr std::size_t kSourceCount = 8;
   using SourceQueues =
       std::array<std::deque<std::uint64_t>, kSourceCount>;
   bool busy = false;

@@ -169,6 +169,8 @@ std::string to_string(TransactionSource source) {
     case TransactionSource::Refresh: return "REFRESH";
     case TransactionSource::GarbageCollection: return "GC";
     case TransactionSource::Recovery: return "RECOVERY";
+    case TransactionSource::HostReplay: return "HOST_REPLAY";
+    case TransactionSource::HostRefresh: return "HOST_REFRESH";
   }
   return "UNKNOWN";
 }
@@ -353,6 +355,8 @@ Config Config::from_yaml_file(const std::string& path) {
   detail::assign_if(values, "nand.reliability.raw_bit_error_rate_per_read", config.raw_bit_error_rate_per_read, parse_probability);
   detail::assign_if(values, "nand.reliability.raw_bit_error_rate_per_retention_ns", config.raw_bit_error_rate_per_retention_ns, parse_probability);
   detail::assign_if(values, "refresh.read_count_threshold", config.refresh_read_count_threshold, integer);
+  detail::assign_if(values, "zones.count", config.zone_count, integer);
+  detail::assign_if(values, "zones.size_pages", config.zone_size_pages, integer);
   detail::assign_if(values, "nand.reliability.retry_ber_multiplier", config.retry_ber_multiplier, parse_probability);
   detail::assign_if(values, "nand.reliability.ecc_correctable_bits", config.ecc_correctable_bits, integer);
   detail::assign_if(values, "nand.reliability.max_read_retries", config.max_read_retries, integer);
@@ -514,6 +518,9 @@ void Config::validate() const {
     throw std::runtime_error(
         "automatic Refresh requires host_managed mapping, positive retention "
         "and concurrency, and guard < retention");
+  if ((zone_count == 0) != (zone_size_pages == 0))
+    throw std::runtime_error(
+        "zone_count and zone_size_pages must be configured together");
   const auto max_u64 = std::numeric_limits<std::uint64_t>::max();
   if (planes_per_stack > max_u64 / blocks_per_plane ||
       planes_per_stack * blocks_per_plane > max_u64 / pages_per_block)

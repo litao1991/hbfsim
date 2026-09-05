@@ -59,6 +59,30 @@ struct ReplayPlan {
   std::uint64_t replay_bytes = 0;
 };
 
+enum class HostReplayStage {
+  Programming,
+  ErasingSource,
+  CleaningDestination,
+  Complete,
+  Failed,
+};
+
+// This engine deliberately models host supplied payloads.  It contains no
+// device-side read/buffer path, unlike CopyEngine.
+struct HostReplayJob {
+  std::uint64_t id = 0;
+  std::uint64_t plan_id = 0;
+  TransactionSource source = TransactionSource::HostReplay;
+  StripeId source_stripe;
+  StripeId destination_stripe;
+  std::uint32_t next_slot = 0;
+  std::uint32_t slot_limit = 0;
+  std::uint32_t pending_erases = 0;
+  SimTime start_time = 0;
+  bool measured = true;
+  HostReplayStage stage = HostReplayStage::Programming;
+};
+
 class CopyEngine {
  public:
   std::uint64_t next_job_id() { return next_job_id_++; }
@@ -93,10 +117,29 @@ class HostReplayManager {
     return plans_.back();
   }
   const std::vector<ReplayPlan>& plans() const { return plans_; }
+  const ReplayPlan& plan(std::uint64_t id) const {
+    if (id >= plans_.size()) throw std::out_of_range("UNKNOWN_REPLAY_PLAN");
+    return plans_.at(id);
+  }
+  const ReplayPlan& record(const StripeId& stripe, std::uint32_t failed_slot,
+                           std::uint32_t committed_slots,
+                           const PhysicalAddr& failed_ppa,
+                           std::uint64_t replay_bytes) {
+    plans_.push_back({next_id_++, stripe, failed_slot, committed_slots,
+                      failed_ppa, replay_bytes});
+    return plans_.back();
+  }
+  std::uint64_t next_job_id() { return next_job_id_++; }
+  std::unordered_map<std::uint64_t, HostReplayJob>& jobs() { return jobs_; }
+  const std::unordered_map<std::uint64_t, HostReplayJob>& jobs() const {
+    return jobs_;
+  }
 
  private:
   std::vector<ReplayPlan> plans_;
   std::uint64_t next_id_ = 0;
+  std::unordered_map<std::uint64_t, HostReplayJob> jobs_;
+  std::uint64_t next_job_id_ = 0;
 };
 
 }  // namespace hbfsim

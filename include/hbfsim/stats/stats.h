@@ -159,6 +159,13 @@ class StatsCollector {
     if (deadline_missed) ++refresh_deadline_misses_;
   }
   void record_refresh_deferred() { ++refresh_deferred_no_space_; }
+  void record_host_replay_job(bool failed, SimTime latency_ns) {
+    if (failed)
+      ++failed_host_replay_jobs_;
+    else
+      ++completed_host_replay_jobs_;
+    host_replay_latencies_.record(latency_ns);
+  }
   void record_dlu_completed(const HbfDlu::Timing& timing);
   void record_dlu_timeout() { ++dlu_timeouts_; }
   void record_dlu_rejection(HbfStatus status);
@@ -248,6 +255,12 @@ class StatsCollector {
   std::uint64_t refresh_deferred_no_space() const {
     return refresh_deferred_no_space_;
   }
+  std::uint64_t completed_host_replay_jobs() const {
+    return completed_host_replay_jobs_;
+  }
+  std::uint64_t failed_host_replay_jobs() const {
+    return failed_host_replay_jobs_;
+  }
   std::uint64_t copy_buffer_high_watermark(
       TransactionSource source) const;
   std::size_t queue_depth_sample_count() const {
@@ -308,6 +321,8 @@ class StatsCollector {
   std::uint64_t failed_refresh_jobs_ = 0;
   std::uint64_t refresh_deadline_misses_ = 0;
   std::uint64_t refresh_deferred_no_space_ = 0;
+  std::uint64_t completed_host_replay_jobs_ = 0;
+  std::uint64_t failed_host_replay_jobs_ = 0;
   std::uint64_t completed_dlus_ = 0;
   std::uint64_t dlu_timeouts_ = 0;
   std::uint64_t dlu_overlaps_ = 0;
@@ -351,6 +366,7 @@ class StatsCollector {
   LatencyHistogram recovery_latencies_;
   LatencyHistogram gc_latencies_;
   LatencyHistogram refresh_latencies_;
+  LatencyHistogram host_replay_latencies_;
   std::map<TransactionSource, std::uint64_t>
       copy_buffer_high_watermarks_;
   ResourceTracker resources_;

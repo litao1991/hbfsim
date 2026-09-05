@@ -189,6 +189,8 @@ void Config::write_resolved_yaml(const std::string& path) const {
       << "\n  guard_time_ns: " << refresh_guard_time_ns
       << "\n  max_concurrent_jobs: " << max_concurrent_refresh_jobs
       << "\n  read_count_threshold: " << refresh_read_count_threshold
+      << "\nzones:\n  count: " << zone_count
+      << "\n  size_pages: " << zone_size_pages
       << "\ncopy_engine:\n  max_inflight_reads: "
       << copy_max_inflight_reads
       << "\n  max_inflight_programs: " << copy_max_inflight_programs

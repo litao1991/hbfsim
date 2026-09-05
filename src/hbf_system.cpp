@@ -189,6 +189,12 @@ HbfSystem::HbfSystem(const Config& config)
       controller_(config, media_),
       host_gc_manager_(config),
       refresh_manager_(config),
-      zones_(config) {}
+      zones_(config) {
+  if (zones_.enabled()) {
+    mapper_.set_zone_resolver(
+        config.zone_count,
+        [this](std::uint64_t lpn) { return zones_.physical_zone(lpn); });
+  }
+}
 
 }  // namespace hbfsim

@@ -308,6 +308,11 @@ void StatsCollector::write(const std::string& output_dir,
           << "\nrefresh_deadline_misses," << refresh_deadline_misses_
           << "\nrefresh_deferred_no_space,"
           << refresh_deferred_no_space_
+          << "\ncompleted_host_replay_jobs," << completed_host_replay_jobs_
+          << "\nfailed_host_replay_jobs," << failed_host_replay_jobs_
+          << "\nhost_replay_mean_latency_ns," << host_replay_latencies_.mean()
+          << "\nhost_replay_p95_latency_ns,"
+          << host_replay_latencies_.percentile(0.95)
           << "\nhost_visible_stripes," << host_visible_stripes_
           << "\nmin_free_stripes," << min_free_stripes_
           << "\nrecovery_read_bytes,"
