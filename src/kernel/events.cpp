@@ -7,6 +7,7 @@ namespace hbfsim {
 void Simulator::finish_program(SubRequest& sub, SimTime now) {
   system_.media().complete_program(sub.paddr, sub.old_paddr, now);
   system_.mapper().commit_write(sub.lpn, sub.paddr, now);
+  system_.zones().record_write(sub.lpn);
 }
 
 void Simulator::complete_subrequest(std::uint64_t id, SimTime now) {
@@ -266,6 +267,7 @@ void Simulator::handle(const Event& event) {
         retire_block(sub.paddr);
       } else {
         const auto erase_count = system_.media().complete_erase(sub.paddr);
+        system_.zones().record_erase(sub.lpn);
         system_.mapper().on_erase(sub.paddr);
         if (config_.max_erase_cycles != 0 &&
             erase_count >= config_.max_erase_cycles) {

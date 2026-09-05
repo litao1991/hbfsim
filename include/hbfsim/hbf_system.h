@@ -6,6 +6,7 @@
 #include "hbfsim/controller/interconnect.h"
 #include "hbfsim/management/host_gc.h"
 #include "hbfsim/management/refresh.h"
+#include "hbfsim/management/zones.h"
 #include "hbfsim/mapping/mapper.h"
 #include "hbfsim/media/nand_media.h"
 #include "hbfsim/media/reliability.h"
@@ -69,6 +70,8 @@ class HbfSystem {
   const HostGcManager& host_gc_manager() const { return host_gc_manager_; }
   RefreshManager& refresh_manager() { return refresh_manager_; }
   const RefreshManager& refresh_manager() const { return refresh_manager_; }
+  ZoneManager& zones() { return zones_; }
+  const ZoneManager& zones() const { return zones_; }
 
  private:
   SimulationProfile profile_ = SimulationProfile::MediaResearch;
@@ -87,6 +90,7 @@ class HbfSystem {
   HostReplayManager replay_manager_;
   HostGcManager host_gc_manager_;
   RefreshManager refresh_manager_;
+  ZoneManager zones_;
 };
 
 }  // namespace hbfsim

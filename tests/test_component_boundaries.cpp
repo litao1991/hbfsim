@@ -23,6 +23,8 @@ hbfsim::Config small_config() {
   config.max_active_planes_per_die = 4;
   config.max_active_planes_per_stack = 4;
   config.mapping_policy = MappingPolicy::Linear;
+  config.zone_count = 2;
+  config.zone_size_pages = 4;
   config.validate();
   return config;
 }
@@ -49,6 +51,12 @@ int main() {
   physical.bank = 1;
   CHECK(system.topology().flat_plane(physical) == 3);
   CHECK(system.topology().flat_bank(physical) == 1);
+  system.zones().record_write(0);
+  system.zones().record_write(1);
+  system.zones().record_erase(7);
+  system.zones().remap(0, 1);
+  CHECK(system.zones().hottest().logical_zone == 0);
+  CHECK(system.zones().zones().at(0).physical_zone == 1);
 
   BankReadCache cache(2);
   PhysicalAddr first{0, 0, 0, 0, 0};

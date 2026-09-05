@@ -1,6 +1,6 @@
 # HBFSim 设计文档
 
-本目录记录 HBFSim v0.5.3 的架构、模型语义和实验方法。文档以当前代码实现为准。
+本目录记录 HBFSim v0.5.5 的架构、模型语义和实验方法。文档以当前代码实现为准。
 
 ## 文档索引
 
@@ -31,6 +31,8 @@
 - [V0.5.1_BATCH_READ_PROTOCOL.md](V0.5.1_BATCH_READ_PROTOCOL.md)：Batch hint、聚合窗口、边界、批量发射与统计。
 - [V0.5.2_HOST_DRIVEN_RETRY.md](V0.5.2_HOST_DRIVEN_RETRY.md)：UECC retry stage、Host 重发与 research compatibility。
 - [V0.5.3_BLOCK_REPLAY.md](V0.5.3_BLOCK_REPLAY.md)：Host-facing ReplayPlan 与 Program Failure 元数据。
+- [V0.5.4_RELIABILITY_V2.md](V0.5.4_RELIABILITY_V2.md)：Read Disturb、Retention Age 与可靠性 Refresh。
+- [V0.5.5_ZONES_WEAR.md](V0.5.5_ZONES_WEAR.md)：Zone metadata、remap 与热冷 P/E 观察。
 
 ## 设计定位
 

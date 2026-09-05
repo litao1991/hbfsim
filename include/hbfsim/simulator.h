@@ -49,6 +49,9 @@ class Simulator {
   std::uint64_t start_host_gc(std::uint64_t logical_addr);
   std::uint64_t start_refresh(std::uint64_t logical_addr);
   void invalidate_host_page(std::uint64_t logical_addr);
+  void remap_zone(std::uint32_t logical_zone, std::uint32_t physical_zone) {
+    system_.zones().remap(logical_zone, physical_zone);
+  }
   std::size_t active_copy_jobs() const { return system_.copy_engine().size(); }
 
  private:

@@ -188,6 +188,7 @@ HbfSystem::HbfSystem(const Config& config)
       media_(config, topology_),
       controller_(config, media_),
       host_gc_manager_(config),
-      refresh_manager_(config) {}
+      refresh_manager_(config),
+      zones_(config) {}
 
 }  // namespace hbfsim
