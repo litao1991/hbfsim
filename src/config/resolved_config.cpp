@@ -90,6 +90,8 @@ void Config::write_resolved_yaml(const std::string& path) const {
       << "\n  batch_read:\n    enabled: " << boolean(batch_read_enabled)
       << "\n    aggregation_window_ns: " << batch_read_aggregation_window_ns
       << "\n    max_pages: " << batch_read_max_pages
+      << "\n  host_driven_read_retry: "
+      << boolean(host_driven_read_retry)
       << "\n  dlu:\n    size: " << dlu_size
       << "\n    max_pending: " << max_pending_dlus
       << "\n    accumulation_timeout_ns: "

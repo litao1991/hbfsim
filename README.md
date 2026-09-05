@@ -1,14 +1,15 @@
-# HBFSim v0.5.1
+# HBFSim v0.5.2
 
 HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style NAND stacks. It models performance-relevant resources rather than packet- or bit-level hardware details.
 
-## Included through v0.5.1
+## Included through v0.5.2
 
 - v0.4.1 is a behavior-preserving ownership refactor: public declarations are split into narrow headers, `HbfSystem` composes protocol/controller/media/extension components, and `Simulator` no longer owns device media, cache, interconnect, or CopyEngine state.
 - v0.4.2 moves controller execution state (active-plane credits, dispatch cursor/wakeup, and program-ready queues) from `Simulator` into `BaseDieController`, preserving the v0.4.1 model behavior.
 - v0.4.3 splits per-plane controller scheduling state from NAND media state. `NandMediaSystem` now owns program/read/erase start, completion, failure, page-state, array-ready, and data-register transitions; the controller owns only queue and active-command state.
 - v0.5.0 introduces the Batch Read foundation: `ReadType`, an ordered `BankSenseQueue`, and a per-Bank Sense ownership domain. The legacy single-read path is intentionally unchanged until Batch admission and aggregation are added.
 - v0.5.1 adds an opt-in Batch Read protocol path: the optional eighth trace column is a Batch hint, and hinted cache misses aggregate per Bank for a configured window before FIFO Sense emission. Batch pages, emissions, and aggregation delay are reported in `summary.csv`.
+- v0.5.2 makes Read Retry host-driven in HBF/AI profiles. An uncorrectable read returns `UncorrectableEccRetryRequired` with its next retry stage; the Host resubmits the Read with that stage. The research profile retains its automatic retry compatibility path.
 
 - Explicit `media_research`, `hbf_v0_7`, and `ai_system` simulation profiles separate compatibility experiments from the specification-oriented path. HBF/AI profiles default research extensions off.
 - `HbfSystem` is now the device-model composition root for mapping, routing, reliability, Host GC, and Refresh services; `Simulator` retains time and event ownership.

@@ -27,6 +27,8 @@ void Simulator::complete_subrequest(std::uint64_t id, SimTime now) {
                    !hbf_data_valid(sub.status);
   if (sub.status != HbfStatus::Success)
     request.status = sub.status;
+  if (sub.failed && sub.status == HbfStatus::UncorrectableEccRetryRequired)
+    request.retry_stage = sub.read_retry_stage + 1;
   const bool request_done = --request.pending_subreqs == 0;
   subrequests_.erase(sub_it);
   if (request_done) {
@@ -168,7 +170,11 @@ void Simulator::handle(const Event& event) {
       const auto& block = media_plane(sub.paddr).blocks.at(sub.paddr.block);
       const auto result = system_.reliability().read_result(
           sub.bytes, sub.read_attempts, block.erase_count);
-      if (result.status == ReadErrorStatus::Uncorrectable &&
+      const bool host_driven_retry =
+          config_.host_driven_read_retry &&
+          config_.simulation_profile != SimulationProfile::MediaResearch;
+      if (!host_driven_retry &&
+          result.status == ReadErrorStatus::Uncorrectable &&
           sub.read_attempts < config_.max_read_retries) {
         if (is_measured(sub.parent_id))
           stats_.record_read_retry();
@@ -190,9 +196,12 @@ void Simulator::handle(const Event& event) {
         system_.media().mark_page_failure(sub.paddr);
         sub.failed = true;
         sub.status =
-            config_.simulation_profile != SimulationProfile::MediaResearch
-                ? HbfStatus::UncorrectableEccRetryRequired
-                : HbfStatus::UncorrectableEcc;
+            host_driven_retry &&
+                    sub.read_retry_stage >= config_.max_read_retries
+                ? HbfStatus::UncorrectableEcc
+                : config_.simulation_profile != SimulationProfile::MediaResearch
+                      ? HbfStatus::UncorrectableEccRetryRequired
+                      : HbfStatus::UncorrectableEcc;
         if (is_measured(sub.parent_id))
           stats_.record_uncorrectable_read();
       } else {

@@ -30,6 +30,7 @@ struct Config {
   bool batch_read_enabled = false;
   SimTime batch_read_aggregation_window_ns = 0;
   std::uint32_t batch_read_max_pages = 1;
+  bool host_driven_read_retry = false;
   std::uint32_t stacks = 1;
   std::uint32_t dies_per_stack = 16;
   std::uint32_t planes_per_die = 32;

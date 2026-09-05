@@ -37,7 +37,9 @@ bool CsvTraceSource::next(TraceEntry& entry) {
                           fields.size() > 6
                               ? detail::parse_u64(fields[6])
                               : std::numeric_limits<std::uint32_t>::max()),
-                      fields.size() > 7 && detail::parse_u64(fields[7]) != 0};
+                      fields.size() > 7 && detail::parse_u64(fields[7]) != 0,
+                      static_cast<std::uint32_t>(
+                          fields.size() > 8 ? detail::parse_u64(fields[8]) : 0)};
     if (previous_timestamp_ && parsed.timestamp_ns < *previous_timestamp_)
       throw std::runtime_error(path_ + ":" + std::to_string(line_number_) +
                                ": trace timestamps must be nondecreasing");

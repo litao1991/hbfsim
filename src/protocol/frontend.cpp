@@ -34,6 +34,8 @@ FrontendAdmission ProtocolFrontend::admit(const TraceEntry& entry,
   request.arrival_time = entry.timestamp_ns;
   request.op = entry.op;
   request.read_type = entry.batch_hint ? ReadType::Batch : ReadType::Single;
+  if (entry.op == OpType::Read && entry.read_retry_stage != 0)
+    request.retry_stage = entry.read_retry_stage;
   request.logical_addr = entry.address;
   request.size = entry.size;
   request.stream_id = entry.stream;
@@ -59,6 +61,10 @@ FrontendAdmission ProtocolFrontend::admit(const TraceEntry& entry,
                   invalid_size
                       ? "read/write size must be non-zero"
                       : "invalidate range must be non-empty and aligned");
+  if (entry.op == OpType::Read &&
+      entry.read_retry_stage > config_.max_read_retries)
+    return reject(HbfStatus::InvalidUserField,
+                  "read retry stage exceeds configured retry limit");
 
   std::optional<HbfChannelAddress> channel_address;
   if (spec_profile) {
@@ -93,6 +99,7 @@ std::vector<HbfResponse> ProtocolFrontend::complete(
   if (request.status != HbfStatus::Success || request.failed) {
     HbfErrorInfo error;
     error.logical_address = request.logical_addr;
+    error.retry_stage = request.retry_stage;
     error.reason = to_string(request.status);
     response = HbfResponse::failure(
         request.id,

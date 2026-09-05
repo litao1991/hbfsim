@@ -385,6 +385,8 @@ void Simulator::split_request(Request& request) {
       sub.parent_id = request.id;
       sub.op = OpType::Read;
       sub.read_type = request.read_type;
+      sub.read_retry_stage = request.retry_stage.value_or(0);
+      sub.read_attempts = sub.read_retry_stage;
       sub.source = TransactionSource::User;
       sub.lpn = current / config_.page_size;
       sub.bytes = bytes;
@@ -453,6 +455,8 @@ void Simulator::split_request(Request& request) {
     sub.parent_id = request.id;
     sub.op = request.op;
     sub.read_type = request.read_type;
+    sub.read_retry_stage = request.retry_stage.value_or(0);
+    sub.read_attempts = sub.read_retry_stage;
     sub.source = TransactionSource::User;
     sub.lpn = lpn;
     sub.bytes = bytes;

@@ -1,4 +1,4 @@
-# HBFSim v0.5.1 架构设计
+# HBFSim v0.5.2 架构设计
 
 ## 1. 目标与范围
 
@@ -63,6 +63,11 @@ v0.5.1 将 optional trace Batch hint 传至 `Request`/`SubRequest`。启用后�
 cache miss 在每 Bank 的 aggregation window 内收集，按 `max_pages` 划分 batch，
 然后以 `BankSenseQueue` 的 front-only 规则开始 Sense；一个 Sense 完成才释放同
 Bank 下一项。不同 Bank 不会相互阻塞。
+
+v0.5.2 将 retry control 从 NAND completion 移至 Host protocol。Spec profile 的
+uncorrectable Sense 不会在设备内自动安排下一次读，而是用 response error 的
+`retry_stage` 请求 Host 重发；重发的 stage 进入 reliability model。Media-research
+profile 则继续使用旧的 device automatic retry，以保持既有实验兼容性。
 
 ## 3. 源码模块
 

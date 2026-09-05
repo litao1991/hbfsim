@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(hbfsim VERSION 0.5.1 LANGUAGES CXX)
+project(hbfsim VERSION 0.5.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -37,7 +37,7 @@ target_link_libraries(hbfsim PRIVATE hbfsim_core)
 
 include(CTest)
 if(BUILD_TESTING)
-  foreach(test_name mapper stripe_mapping parallelism_group copy_engine host_gc refresh_manager wear model_validation scheduler timing erase resources channels warmup advanced v011 component_boundaries batch_read)
+  foreach(test_name mapper stripe_mapping parallelism_group copy_engine host_gc refresh_manager wear model_validation scheduler timing erase resources channels warmup advanced v011 component_boundaries batch_read host_retry)
     add_executable(test_${test_name} tests/test_${test_name}.cpp)
     target_link_libraries(test_${test_name} PRIVATE hbfsim_core)
     add_test(NAME ${test_name} COMMAND test_${test_name})

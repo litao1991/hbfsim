@@ -40,6 +40,7 @@ struct Request {
   bool internal = false;
   bool axi_tracked = false;
   HbfStatus status = HbfStatus::Success;
+  std::optional<std::uint32_t> retry_stage;
   AxiEndpoint axi;
   TransactionSource source = TransactionSource::User;
 };
@@ -78,6 +79,7 @@ struct SubRequest {
   SimTime array_completion_time = 0;
   SimTime suspended_remaining_ns = 0;
   std::uint32_t read_attempts = 0;
+  std::uint32_t read_retry_stage = 0;
   HostRoute host_route;
   LatencyBreakdown latency;
   bool suspended = false;
@@ -102,6 +104,7 @@ struct TraceEntry {
   std::uint32_t axi_id = 0;
   std::uint32_t axi_port = std::numeric_limits<std::uint32_t>::max();
   bool batch_hint = false;
+  std::uint32_t read_retry_stage = 0;
 };
 
 }  // namespace hbfsim

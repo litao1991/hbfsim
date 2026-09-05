@@ -200,6 +200,7 @@ void Config::apply_profile_defaults(SimulationProfile profile) {
   channel_media_policy = research ? ChannelMediaPolicy::Linear
                                   : ChannelMediaPolicy::FineStripe;
   read_cache_enabled = !research;
+  host_driven_read_retry = !research;
   mapping_policy = research ? MappingPolicy::BurstStripe
                             : MappingPolicy::Linear;
 }
@@ -267,6 +268,8 @@ Config Config::from_yaml_file(const std::string& path) {
                     config.batch_read_aggregation_window_ns, time);
   detail::assign_if(values, "hbf.batch_read.max_pages",
                     config.batch_read_max_pages, integer);
+  detail::assign_if(values, "hbf.host_driven_read_retry",
+                    config.host_driven_read_retry, parse_bool);
   detail::assign_if(values, "axi.ports_per_channel",
                     config.axi_ports_per_channel, integer);
   detail::assign_if(values, "axi.port_interleave",
