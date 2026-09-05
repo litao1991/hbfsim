@@ -22,6 +22,7 @@ using SimTime = std::uint64_t;
 
 enum class OpType { Read, Write, Erase, Refresh, Invalidate };
 enum class MappingPolicy { Linear, FineStripe, BurstStripe, HostManaged };
+enum class StripeScope { Device, Stack, Custom };
 enum class TransactionSource {
   User,
   Mapping,
@@ -85,6 +86,8 @@ struct Config {
   InitializationMode initialization_mode = InitializationMode::Empty;
   MappingPolicy mapping_policy = MappingPolicy::BurstStripe;
   std::uint64_t burst_size = 2 * 1024 * 1024;
+  StripeScope stripe_scope = StripeScope::Device;
+  std::uint32_t stripe_lanes = 0;
   SimTime write_starvation_ns = 100'000;
   SimTime source_aging_ns = 1'000'000;
   std::uint32_t max_consecutive_reads = 64;
@@ -207,6 +210,10 @@ class StripeMappingTable {
 
   std::uint32_t stripe_width() const { return stripe_width_; }
   std::uint32_t stripe_capacity() const { return stripe_capacity_; }
+  std::uint32_t parallelism_group_count() const {
+    return parallelism_group_count_;
+  }
+  std::uint32_t parallelism_group(const StripeId& stripe) const;
   StripeId allocate(std::uint64_t logical_base_lpn);
   StripeId allocate_replacement(std::uint64_t logical_base_lpn);
   PhysicalAddr preview_program(std::uint64_t lpn) const;
@@ -249,9 +256,13 @@ class StripeMappingTable {
   StripeDescriptor& mutable_descriptor(const StripeId& stripe);
   std::uint64_t logical_base(std::uint64_t lpn) const;
   PhysicalAddr preview_for(const StripeId& stripe, std::uint64_t lpn) const;
+  PhysicalAddr address_from_geometry(std::uint64_t physical,
+                                     std::uint32_t generation,
+                                     std::uint32_t slot) const;
   const Config& config_;
   std::uint32_t stripe_width_ = 0;
   std::uint32_t stripe_capacity_ = 0;
+  std::uint32_t parallelism_group_count_ = 0;
   std::vector<StripeDescriptor> descriptors_;
   std::vector<std::uint32_t> generations_;
   std::deque<std::uint64_t> free_stripes_;
@@ -703,6 +714,12 @@ class StatsCollector {
     usable_physical_capacity_bytes_ = physical_bytes;
     host_visible_capacity_bytes_ = host_visible_bytes;
   }
+  void set_stripe_geometry(std::uint32_t groups, std::uint32_t width,
+                           std::uint32_t capacity) {
+    parallelism_groups_ = groups;
+    stripe_width_pages_ = width;
+    stripe_capacity_pages_ = capacity;
+  }
   void record_remap_commit(TransactionSource source, SimTime latency_ns);
   void record_aborted_migration() { ++aborted_migrations_; }
   void record_copy_job(TransactionSource source, bool failed);
@@ -826,6 +843,9 @@ class StatsCollector {
   std::uint64_t total_physical_capacity_bytes_ = 0;
   std::uint64_t usable_physical_capacity_bytes_ = 0;
   std::uint64_t host_visible_capacity_bytes_ = 0;
+  std::uint32_t parallelism_groups_ = 0;
+  std::uint32_t stripe_width_pages_ = 0;
+  std::uint32_t stripe_capacity_pages_ = 0;
   std::uint64_t remap_commits_ = 0;
   std::uint64_t aborted_migrations_ = 0;
   std::uint64_t completed_recovery_jobs_ = 0;

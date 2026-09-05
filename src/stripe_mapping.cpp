@@ -49,16 +49,30 @@ std::uint32_t LazyBitmap::count() const {
 
 StripeMappingTable::StripeMappingTable(const Config& config)
     : config_(config) {
-  const auto width = static_cast<std::uint64_t>(config_.stacks) *
-                     config_.dies_per_stack * config_.planes_per_die;
+  config_.validate();
+  const auto planes_per_stack =
+      static_cast<std::uint64_t>(config_.dies_per_stack) *
+      config_.planes_per_die;
+  const auto total_planes =
+      static_cast<std::uint64_t>(config_.stacks) * planes_per_stack;
+  auto width = total_planes;
+  if (config_.stripe_scope == StripeScope::Stack)
+    width = planes_per_stack;
+  else if (config_.stripe_scope == StripeScope::Custom)
+    width = config_.stripe_lanes;
   const auto capacity = width * config_.pages_per_block;
   if (width > std::numeric_limits<std::uint32_t>::max() ||
       capacity > std::numeric_limits<std::uint32_t>::max())
     throw std::runtime_error("host-managed stripe geometry exceeds 32-bit slots");
   stripe_width_ = static_cast<std::uint32_t>(width);
   stripe_capacity_ = static_cast<std::uint32_t>(capacity);
+  parallelism_group_count_ =
+      static_cast<std::uint32_t>(total_planes / width);
+  const auto physical_stripes =
+      static_cast<std::size_t>(parallelism_group_count_) *
+      config_.blocks_per_plane;
   auto scaled_reserved =
-      static_cast<long double>(config_.blocks_per_plane) *
+      static_cast<long double>(physical_stripes) *
       config_.host_gc_overprovisioning_ratio;
   const auto nearest_reserved = std::round(scaled_reserved);
   const auto tolerance =
@@ -67,17 +81,28 @@ StripeMappingTable::StripeMappingTable(const Config& config)
   if (std::abs(scaled_reserved - nearest_reserved) <= tolerance)
     scaled_reserved = nearest_reserved;
   const auto reserved = std::min<std::size_t>(
-      config_.blocks_per_plane - 1,
+      physical_stripes - 1,
       static_cast<std::size_t>(std::ceil(scaled_reserved)));
-  host_visible_stripes_ = config_.blocks_per_plane - reserved;
-  usable_stripes_ = config_.blocks_per_plane;
-  descriptors_.resize(config_.blocks_per_plane);
-  generations_.resize(config_.blocks_per_plane, 0);
-  for (std::uint64_t physical = 0; physical < config_.blocks_per_plane;
-       ++physical) {
-    descriptors_[physical].id.physical_id = physical;
-    free_stripes_.push_back(physical);
+  host_visible_stripes_ = physical_stripes - reserved;
+  usable_stripes_ = physical_stripes;
+  descriptors_.resize(physical_stripes);
+  generations_.resize(physical_stripes, 0);
+  for (std::uint32_t block = 0; block < config_.blocks_per_plane; ++block) {
+    for (std::uint32_t group = 0; group < parallelism_group_count_; ++group) {
+      const auto physical = static_cast<std::uint64_t>(group) *
+                                config_.blocks_per_plane +
+                            block;
+      descriptors_[physical].id.physical_id = physical;
+      free_stripes_.push_back(physical);
+    }
   }
+}
+
+std::uint32_t StripeMappingTable::parallelism_group(
+    const StripeId& stripe) const {
+  descriptor(stripe);
+  return static_cast<std::uint32_t>(stripe.physical_id /
+                                    config_.blocks_per_plane);
 }
 
 std::uint64_t StripeMappingTable::logical_base(std::uint64_t lpn) const {
@@ -151,25 +176,36 @@ StripeDescriptor& StripeMappingTable::mutable_descriptor(
 PhysicalAddr StripeMappingTable::address_for(const StripeId& stripe,
                                              std::uint32_t slot) const {
   descriptor(stripe);
+  return address_from_geometry(stripe.physical_id, stripe.generation, slot);
+}
+
+PhysicalAddr StripeMappingTable::address_from_geometry(
+    std::uint64_t physical, std::uint32_t generation,
+    std::uint32_t slot) const {
   if (slot >= stripe_capacity_)
     throw std::out_of_range("stripe slot out of range");
   const auto lane = slot % stripe_width_;
   const auto row = slot / stripe_width_;
   const auto planes_per_stack = static_cast<std::uint64_t>(
       config_.dies_per_stack) * config_.planes_per_die;
+  const auto group = physical / config_.blocks_per_plane;
+  if (group >= parallelism_group_count_)
+    throw std::out_of_range("physical stripe outside parallelism groups");
+  const auto global_lane = group * stripe_width_ + lane;
 
   PhysicalAddr result;
-  result.stack = static_cast<std::uint32_t>(lane / planes_per_stack);
-  const auto local_lane = lane % planes_per_stack;
+  result.stack = static_cast<std::uint32_t>(global_lane / planes_per_stack);
+  const auto local_lane = global_lane % planes_per_stack;
   result.die = static_cast<std::uint32_t>(local_lane /
                                           config_.planes_per_die);
   result.plane = static_cast<std::uint32_t>(local_lane %
                                             config_.planes_per_die);
-  result.block = static_cast<std::uint32_t>(stripe.physical_id);
+  result.block = static_cast<std::uint32_t>(physical %
+                                             config_.blocks_per_plane);
   result.page = row;
-  result.data_port = lane % config_.ports_per_stack;
-  result.physical_stripe = stripe.physical_id;
-  result.generation = stripe.generation;
+  result.data_port = global_lane % config_.ports_per_stack;
+  result.physical_stripe = physical;
+  result.generation = generation;
   return result;
 }
 
@@ -184,7 +220,16 @@ std::uint32_t StripeMappingTable::slot_of(const PhysicalAddr& paddr) const {
       (paddr.stack * config_.dies_per_stack + paddr.die) *
           config_.planes_per_die +
       paddr.plane;
-  return paddr.page * stripe_width_ + lane;
+  if (paddr.physical_stripe >= descriptors_.size())
+    throw std::out_of_range("physical stripe outside stripe geometry");
+  const auto group = paddr.physical_stripe / config_.blocks_per_plane;
+  const auto group_first_lane = group * stripe_width_;
+  if (lane < group_first_lane || lane >= group_first_lane + stripe_width_)
+    throw std::runtime_error("physical address outside its parallelism group");
+  if (paddr.block != paddr.physical_stripe % config_.blocks_per_plane)
+    throw std::runtime_error("physical stripe and block disagree");
+  return paddr.page * stripe_width_ +
+         static_cast<std::uint32_t>(lane - group_first_lane);
 }
 
 PhysicalAddr StripeMappingTable::preview_for(const StripeId& stripe,
@@ -211,13 +256,7 @@ PhysicalAddr StripeMappingTable::preview_program(std::uint64_t lpn) const {
       std::numeric_limits<std::uint32_t>::max())
     throw std::overflow_error("STRIPE_GENERATION_EXHAUSTED");
   const auto next_generation = generations_.at(physical) + 1;
-  const auto lane = std::uint32_t{0};
-  PhysicalAddr result;
-  result.block = static_cast<std::uint32_t>(physical);
-  result.data_port = lane % config_.ports_per_stack;
-  result.physical_stripe = physical;
-  result.generation = next_generation;
-  return result;
+  return address_from_geometry(physical, next_generation, 0);
 }
 
 PhysicalAddr StripeMappingTable::reserve_program(std::uint64_t lpn) {
@@ -339,7 +378,7 @@ std::optional<PhysicalAddr> StripeMappingTable::lookup(
 
 std::optional<std::uint64_t> StripeMappingTable::reverse_lookup(
     const PhysicalAddr& paddr, std::uint32_t expected_generation) const {
-  const StripeId stripe{paddr.block, expected_generation};
+  const StripeId stripe{paddr.physical_stripe, expected_generation};
   const auto& target = descriptor(stripe);
   if (target.state == StripeState::Free || target.state == StripeState::Bad)
     return std::nullopt;
@@ -422,18 +461,25 @@ void StripeMappingTable::abort_migration(const StripeId& destination) {
 }
 
 void StripeMappingTable::on_erase(const PhysicalAddr& block_addr) {
-  if (block_addr.block >= descriptors_.size())
+  if (block_addr.physical_stripe >= descriptors_.size())
     throw std::out_of_range("erased block outside stripe geometry");
-  auto& target = descriptors_.at(block_addr.block);
+  auto& target = descriptors_.at(block_addr.physical_stripe);
   if (target.state == StripeState::Free || target.state == StripeState::Bad)
     return;
   if (block_addr.generation != 0 &&
       block_addr.generation != target.id.generation)
     throw std::runtime_error("STALE_GENERATION_ON_ERASE");
-  const auto lane =
+  const auto global_lane =
       (block_addr.stack * config_.dies_per_stack + block_addr.die) *
           config_.planes_per_die +
       block_addr.plane;
+  const auto group = block_addr.physical_stripe / config_.blocks_per_plane;
+  const auto group_first_lane = group * stripe_width_;
+  if (global_lane < group_first_lane ||
+      global_lane >= group_first_lane + stripe_width_)
+    throw std::runtime_error("erased block outside its parallelism group");
+  const auto lane = static_cast<std::uint32_t>(global_lane -
+                                                group_first_lane);
   if (!target.erased_lane_bitmap.test(lane)) {
     target.erased_lane_bitmap.set(lane, stripe_width_);
     ++target.erased_lanes;
@@ -452,9 +498,9 @@ void StripeMappingTable::on_erase(const PhysicalAddr& block_addr) {
 }
 
 bool StripeMappingTable::retire_stripe(const PhysicalAddr& block_addr) {
-  if (block_addr.block >= descriptors_.size())
+  if (block_addr.physical_stripe >= descriptors_.size())
     throw std::out_of_range("retired block outside stripe geometry");
-  auto& target = descriptors_.at(block_addr.block);
+  auto& target = descriptors_.at(block_addr.physical_stripe);
   if (block_addr.generation != 0 && target.id.generation != 0 &&
       block_addr.generation != target.id.generation)
     throw std::runtime_error("STALE_GENERATION_ON_RETIRE");
@@ -462,7 +508,7 @@ bool StripeMappingTable::retire_stripe(const PhysicalAddr& block_addr) {
   if (const auto active = active_.find(target.logical_base_lpn);
       active != active_.end() && active->second == target.id)
     active_.erase(active);
-  const auto physical = static_cast<std::uint64_t>(block_addr.block);
+  const auto physical = block_addr.physical_stripe;
   free_stripes_.erase(
       std::remove(free_stripes_.begin(), free_stripes_.end(), physical),
       free_stripes_.end());

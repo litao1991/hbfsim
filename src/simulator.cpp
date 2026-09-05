@@ -66,6 +66,10 @@ Simulator::Simulator(Config config)
       : physical_pages;
   stats_.set_capacity(physical_pages * config_.page_size,
                       host_visible_pages * config_.page_size);
+  if (const auto* mapping = mapper_.stripe_mapping())
+    stats_.set_stripe_geometry(mapping->parallelism_group_count(),
+                               mapping->stripe_width(),
+                               mapping->stripe_capacity());
 
   host_interfaces_.reserve(config_.stacks);
   for (std::uint32_t i = 0; i < config_.stacks; ++i) {

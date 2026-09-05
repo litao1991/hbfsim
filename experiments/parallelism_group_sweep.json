@@ -1,0 +1,14 @@
+{
+  "base_config": "configs/hbf_parallelism_groups.yaml",
+  "trace": "traces/parallelism_groups.csv",
+  "output_root": "results/parallelism_group_sweep",
+  "parameters": {
+    "stripe.lanes": [1, 2, 4, 8, 16]
+  },
+  "plot_metrics": [
+    "effective_bandwidth_GBps",
+    "p99_latency_ns",
+    "stripe_capacity_pages",
+    "stripe_write_amplification"
+  ]
+}

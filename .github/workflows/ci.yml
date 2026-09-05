@@ -23,6 +23,11 @@ jobs:
         run: cmake --build build --parallel
       - name: Test
         run: ctest --test-dir build --output-on-failure
+      - name: Model validation gate
+        if: matrix.build_type == 'Release' && matrix.compiler == 'gcc'
+        run: >-
+          python3 tools/model_validation.py --build-dir build
+          --output-dir results/model_validation
 
   sanitizers:
     runs-on: ubuntu-latest

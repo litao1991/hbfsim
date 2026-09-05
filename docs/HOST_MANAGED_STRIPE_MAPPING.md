@@ -2,9 +2,9 @@
 
 ## 1. 文档状态
 
-本文定义 HBFSim v0.2 的 Host-managed 映射、Program Failure 恢复和主动 GC 语义，也是实现状态清单。
+本文定义 HBFSim Host-managed 映射、Program Failure 恢复和主动 GC 语义，也是实现状态清单。
 
-截至 v0.2.6，阶段 A/B 已完成；阶段 C 的失败通知、Host replay、流水数据搬运和 destination retry 已完成；阶段 D 支持 Host 显式/水位触发 GC，并由同一 CopyEngine 执行 Automatic Refresh。erase_count、坏块/条带退休和容量降级也已接入。更丰富的 Victim 策略以及完整 extent/sparse Host 写入 fallback 仍在后续阶段。
+截至 v0.3.0，阶段 A/B 已完成；阶段 C 的失败通知、Host replay、流水数据搬运和 destination retry 已完成；阶段 D 支持 Host 显式/水位触发 GC，并由同一 CopyEngine 执行 Automatic Refresh。erase_count、坏块/条带退休和容量降级也已接入。物理条带可以按 Device、Stack 或自定义 Lane 数划分 Parallelism Group。更丰富的 Victim 策略以及完整 extent/sparse Host 写入 fallback 仍在后续阶段。
 
 设计目标是利用上层提供的严格顺序约束，把传统逐 Page L2P/P2L 表收敛为条带级元数据，同时仍然准确模拟物理 Page 状态、数据搬运流量、资源竞争和失败恢复延迟。
 
@@ -26,7 +26,7 @@
 
 ## 3. 条带几何与可逆交织
 
-一个 `StripeBlock` 由 `W` 个固定 Lane 上、具有相同 Block index 的物理 Block 组成。Lane 可以展开表示 Stack 内的 Die/Plane 组合；具体展开方式由配置固定。
+一个 `StripeBlock` 由同一 Parallelism Group 内 `W` 个固定 Lane 上、具有相同 Block index 的物理 Block 组成。Lane 展开表示全设备 Stack/Die/Plane 组合；Group 的起始 Lane 和宽度由配置固定。
 
 ```text
 StripeBlock
@@ -40,15 +40,16 @@ StripeBlock
 
 ```text
 lpn  = L0 + s
-lane = s % W
-row  = s / W
-ppa  = stripe_base + lane_to_die_plane(lane) + page(row)
+local_lane  = s % W
+row         = s / W
+global_lane = group × W + local_lane
+ppa         = stripe_base + lane_to_stack_die_plane(global_lane) + page(row)
 ```
 
 反向计算为：
 
 ```text
-s   = page_row × W + die_plane_to_lane(ppa)
+s   = page_row × W + (global_lane(ppa) - group × W)
 lpn = L0 + s
 ```
 

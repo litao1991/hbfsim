@@ -19,6 +19,15 @@ const char* mapping_name(MappingPolicy value) {
   return "unknown";
 }
 
+const char* stripe_scope_name(StripeScope value) {
+  switch (value) {
+    case StripeScope::Device: return "device";
+    case StripeScope::Stack: return "stack";
+    case StripeScope::Custom: return "custom";
+  }
+  return "unknown";
+}
+
 const char* initialization_name(InitializationMode value) {
   switch (value) {
     case InitializationMode::Empty: return "empty";
@@ -44,6 +53,15 @@ void Config::write_resolved_yaml(const std::string& path) const {
     std::filesystem::create_directories(target.parent_path());
   std::ofstream out(target);
   if (!out) throw std::runtime_error("cannot write resolved config");
+  const auto planes_per_stack =
+      static_cast<std::uint64_t>(dies_per_stack) * planes_per_die;
+  const auto total_planes = static_cast<std::uint64_t>(stacks) *
+                            planes_per_stack;
+  const auto effective_lanes =
+      stripe_scope == StripeScope::Stack
+          ? planes_per_stack
+          : stripe_scope == StripeScope::Custom ? stripe_lanes
+                                                 : total_planes;
   out << "device:\n  stacks: " << stacks
       << "\nhost_interface:\n  channels_per_stack: "
       << host_channels_per_stack
@@ -100,6 +118,10 @@ void Config::write_resolved_yaml(const std::string& path) const {
       << initialization_name(initialization_mode)
       << "\nmapping:\n  policy: " << mapping_name(mapping_policy)
       << "\n  burst_size: " << burst_size
+      << "\nstripe:\n  scope: " << stripe_scope_name(stripe_scope)
+      << "\n  lanes: " << stripe_lanes
+      << "\n  effective_lanes: " << effective_lanes
+      << "\n  parallelism_groups: " << total_planes / effective_lanes
       << "\nscheduler:\n  write_starvation_ns: "
       << write_starvation_ns
       << "\n  source_aging_ns: " << source_aging_ns

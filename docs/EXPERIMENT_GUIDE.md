@@ -15,6 +15,7 @@ ctest --test-dir build --output-on-failure
 ./build/hbfsim configs/hbf_baseline.yaml traces/example.csv
 ./build/hbfsim configs/hbf_small_test.yaml traces/read_write_erase.csv
 ./build/hbfsim configs/hbf_host_gc.yaml traces/host_gc_cycle.csv
+./build/hbfsim configs/hbf_parallelism_groups.yaml traces/parallelism_groups.csv
 ```
 
 命令行只接收两个参数：配置文件和 trace 文件。输出目录由 `statistics.output_dir` 决定。
@@ -110,6 +111,8 @@ Read/Write/Invalidate 的 `size` 必须非零且按 Page 对齐。Invalidate 是
 |---|---|
 | `mapping.policy` | `linear/fine_stripe/burst_stripe/host_managed` |
 | `mapping.burst_size` | Burst Stripe 的连续 burst 大小 |
+| `stripe.scope` | Host-managed 条带范围：`device/stack/custom` |
+| `stripe.lanes` | `custom` Group 的 Plane/Lane 数；省略 scope 时非零值自动选择 custom |
 | `scheduler.write_starvation_us` | 非 Read 最大等待阈值，单位 us |
 | `scheduler.write_starvation_ns` | 非 Read 最大等待阈值，单位 ns；若同时设置则覆盖旧的 us key |
 | `scheduler.source_aging_ns` | GC 等低优先级来源提升为最高仲裁级别前的等待时间 |
@@ -122,6 +125,8 @@ Read/Write/Invalidate 的 `size` 必须非零且按 Page 对齐。Invalidate 是
 | `copy_engine.prefetch_window_pages` | 相对顺序 Program frontier 的最大 Read-ahead 窗口 |
 
 `burst_stripe` 要求 burst_size 是 page_size 的整数倍，并且每个 Stack 的 Page 容量能容纳整数个 burst。
+
+Host-managed Parallelism Group 的有效 Lane 数必须整除全设备 Plane 数，且不能切开 Stack 边界：一个 Group 必须均匀包含在单个 Stack 内，或覆盖整数个完整 Stack。`device` 是兼容默认值；`stack` 的宽度等于每 Stack 的 Die×Plane 数；`custom` 必须显式设置非零 `stripe.lanes`。
 
 ### 3.8 Automatic Host GC
 
@@ -177,6 +182,7 @@ Automatic Refresh 仅支持 `host_managed`，复用 Recovery/GC 的 CopyEngine�
 - 请求总数、Read/Write 数；
 - Read/Write 数据面的 `completed_bytes` 与 `successful_bytes`；Invalidate 的范围字节数单独出现在 `op_INVALIDATE_bytes`；
 - `failed_requests`；
+- `parallelism_groups`、`stripe_width_pages`、`stripe_capacity_pages`；
 - `program_failures`；
 - `program_failure_notices`、`remap_commits`、`aborted_migrations`；
 - Recovery/Host GC 完成与失败 job 数；

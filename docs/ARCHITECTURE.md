@@ -1,4 +1,4 @@
-# HBFSim v0.2.6 架构设计
+# HBFSim v0.3.0 架构设计
 
 ## 1. 目标与范围
 
@@ -69,6 +69,17 @@ Device
             └── Block [blocks_per_plane]
                 └── Page [pages_per_block]
 ```
+
+Host-managed 介质在物理 Plane 展平空间之上增加等宽 Parallelism Group：
+
+```text
+Device planes
+├── Parallelism Group 0 ── Physical Stripe [block 0..B-1]
+├── Parallelism Group 1 ── Physical Stripe [block 0..B-1]
+└── Parallelism Group N ── Physical Stripe [block 0..B-1]
+```
+
+`stripe.scope` 可选择全 Device、每 Stack 或自定义连续 Lane 数。默认全 Device，与 v0.2.6 完全兼容。
 
 PPA 包含 `stack/die/plane/block/page/offset/data_port`；独立的 `HostRoute` 包含 `stack/channel`。Host Channel 按逻辑页条带选择，不再由 `data_port` 取模推导。Plane 被展平为全局索引，用于状态数组和利用率统计。
 
@@ -202,9 +213,9 @@ Program/Erase active
 
 生产执行路径按 `INITIALIZE → WARMUP → MEASURE → DRAIN` 推进。Warmup 请求完成后才读取 Measurement 的第一条 trace；若原始时间戳早于 Warmup 完成时间，Measurement 整体平移，保持请求间隔不变。
 
-## 9. v0.2 Host-managed 条带映射
+## 9. Host-managed 条带映射与 Parallelism Group
 
-v0.2 不采用传统逐 Page Reverse Mapping，而是在上层保证逻辑地址和物理地址均按固定条带顺序写入的前提下，使用 `StripeMappingTable`、条带描述符和可逆交织公式完成 LPN/PPA 双向计算。正常路径只保存 `logical_base_lpn`、物理条带身份、`generation`、写入 frontier 和状态 bitmap；物理条带由所有 Lane 上相同 Block index 的 Block 组成。
+系统不采用传统逐 Page Reverse Mapping，而是在上层保证逻辑地址和物理地址均按固定条带顺序写入的前提下，使用 `StripeMappingTable`、条带描述符和可逆交织公式完成 LPN/PPA 双向计算。正常路径只保存 `logical_base_lpn`、物理条带身份、`generation`、写入 frontier 和状态 bitmap；v0.3.0 的物理条带由一个 Parallelism Group 内所有 Lane 上相同 Block index 的 Block 组成。
 
 当前已经实现：
 
@@ -226,6 +237,7 @@ v0.2 不采用传统逐 Page Reverse Mapping，而是在上层保证逻辑地址
 - Recovery/GC 分来源流量、延迟、完成状态和写放大统计。
 - Retention Deadline、RefreshManager 和复用同一 CopyEngine 的 Automatic Refresh；
 - erase_count 驱动的 RBER/Program/Erase Failure、Block/Stripe Retirement 和容量降级统计。
+- Device/Stack/Custom Parallelism Group、组间轮转分配、组内 Erase 完成和组级退休故障域。
 
 Program Failure 和 GC 均由 Host policy 发起数据 Copy。`auto_recovery_enabled` 表示仿真 Host 收到失败通知后自动执行既定恢复策略；GC 既可由 Host 通过 `start_host_gc(logical_addr)` 显式选择 victim，也可由 `HostGcManager` 在 free stripe 到达低水位时自动选择。目标条带完成并 Seal 之前，旧条带保持 ACTIVE；只有 `REMAP_COMMIT` 能原子切换权威映射。完整设计见 [HOST_MANAGED_STRIPE_MAPPING.md](HOST_MANAGED_STRIPE_MAPPING.md)。
 
@@ -246,4 +258,4 @@ Program Failure 和 GC 均由 Host policy 发起数据 Copy。`auto_recovery_ena
 - ECC 只反映纠错能力和延迟结果，不模拟编码器面积与能耗；
 - Suspend/Resume 不模拟模拟电压恢复细节；
 - `tCCS/tADL/tWHR` 是资源可用时间约束，不是引脚波形仿真。
-- 条带级映射、Recovery、Host GC、Automatic Refresh、磨损/退休、在线统计和实验元数据已进入 v0.2.6；完整 extent/sparse Host 写入 fallback、Wear Leveling、温度/读扰模型和 cost-benefit Victim 策略仍未实现。
+- 条带级映射、Parallelism Group、Recovery、Host GC、Automatic Refresh、磨损/退休、在线统计和实验元数据已进入 v0.3.0；完整 extent/sparse Host 写入 fallback、Wear Leveling、温度/读扰模型和 cost-benefit Victim 策略仍未实现。

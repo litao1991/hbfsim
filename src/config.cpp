@@ -26,6 +26,17 @@ InitializationMode parse_initialization(const std::string& value) {
   throw std::runtime_error("unknown initialization mode: " + value);
 }
 
+StripeScope parse_stripe_scope(const std::string& value) {
+  const auto normalized = detail::lower(detail::trim(value));
+  if (normalized == "device" || normalized == "full_device")
+    return StripeScope::Device;
+  if (normalized == "stack" || normalized == "per_stack")
+    return StripeScope::Stack;
+  if (normalized == "custom" || normalized == "lanes")
+    return StripeScope::Custom;
+  throw std::runtime_error("unknown stripe scope: " + value);
+}
+
 bool parse_bool(const std::string& value) {
   const auto normalized = detail::lower(detail::trim(value));
   if (normalized == "true" || normalized == "1" || normalized == "yes")
@@ -203,6 +214,12 @@ Config Config::from_yaml_file(const std::string& path) {
     config.initialization_mode = parse_initialization(it->second);
   detail::assign_if(values, "mapping.burst_size", config.burst_size, parse_size);
   if (const auto it = values.find("mapping.policy"); it != values.end()) config.mapping_policy = parse_mapping(it->second);
+  const auto stripe_scope = values.find("stripe.scope");
+  if (stripe_scope != values.end())
+    config.stripe_scope = parse_stripe_scope(stripe_scope->second);
+  detail::assign_if(values, "stripe.lanes", config.stripe_lanes, integer);
+  if (stripe_scope == values.end() && config.stripe_lanes != 0)
+    config.stripe_scope = StripeScope::Custom;
   detail::assign_if(values, "scheduler.write_starvation_us", config.write_starvation_ns,
                     [](const std::string& v) { return detail::parse_u64(v) * 1'000ULL; });
   detail::assign_if(values, "scheduler.write_starvation_ns", config.write_starvation_ns, time);
@@ -276,6 +293,25 @@ void Config::validate() const {
     throw std::runtime_error("active-plane limit exceeds configured topology");
   if (multi_plane_enabled && max_multi_plane_width > planes_per_die)
     throw std::runtime_error("multi-plane width exceeds planes per die");
+  std::uint64_t resolved_stripe_lanes = total_planes;
+  if (stripe_scope == StripeScope::Stack)
+    resolved_stripe_lanes = planes_per_stack;
+  else if (stripe_scope == StripeScope::Custom)
+    resolved_stripe_lanes = stripe_lanes;
+  if (resolved_stripe_lanes == 0 ||
+      resolved_stripe_lanes > total_planes ||
+      total_planes % resolved_stripe_lanes != 0 ||
+      (planes_per_stack % resolved_stripe_lanes != 0 &&
+       resolved_stripe_lanes % planes_per_stack != 0))
+    throw std::runtime_error(
+        "stripe lanes must be non-zero, no larger than the device, and "
+        "divide the total plane count without splitting a stack boundary");
+  if ((stripe_scope == StripeScope::Device && stripe_lanes != 0 &&
+       stripe_lanes != total_planes) ||
+      (stripe_scope == StripeScope::Stack && stripe_lanes != 0 &&
+       stripe_lanes != planes_per_stack))
+    throw std::runtime_error(
+        "stripe.lanes conflicts with the selected stripe scope");
   if (program_failure_rate < 0.0 || program_failure_rate > 1.0 ||
       program_failure_rate_per_erase < 0.0 ||
       program_failure_rate_per_erase > 1.0 ||

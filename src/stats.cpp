@@ -236,6 +236,9 @@ void StatsCollector::write(const std::string& output_dir,
           << usable_physical_capacity_bytes_
           << "\nhost_visible_capacity_bytes,"
           << host_visible_capacity_bytes_
+          << "\nparallelism_groups," << parallelism_groups_
+          << "\nstripe_width_pages," << stripe_width_pages_
+          << "\nstripe_capacity_pages," << stripe_capacity_pages_
           << "\nremap_commits," << remap_commits_
           << "\naborted_migrations," << aborted_migrations_
           << "\ncompleted_recovery_jobs," << completed_recovery_jobs_

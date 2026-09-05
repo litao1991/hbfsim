@@ -1,8 +1,8 @@
-# HBFSim v0.2.7
+# HBFSim v0.3.0
 
 HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style NAND stacks. It models performance-relevant resources rather than packet- or bit-level hardware details.
 
-## Included through v0.2.7
+## Included through v0.3.0
 
 - Host commands and write/read payloads use separate staged events; requests are split into page-sized subrequests.
 - Stack → Die → Plane topology, with per-die and per-stack array-concurrency caps.
@@ -17,7 +17,7 @@ HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style
 - Program/erase suspend and resume for queued reads, compatible same-die multi-plane batches, and one-page cache-program overlap per plane.
 - Deterministic seeded program-failure injection and Poisson raw-bit-error sampling, with configurable ECC strength, retry count, retry latency, and retry BER reduction.
 - Host-managed writes reserve monotonically increasing stripe slots when the Host command is accepted. In-place overwrite and skipped slots are rejected; completion commits `VALID` or `FAILED` state without a page-level L2P entry.
-- A Host-managed physical stripe spans the same block index on every configured Stack/Die/Plane lane. Its fixed interleave supports O(1) LPN→PPA and PPA→LPN, lazy state bitmaps, atomic replacement commits, and generation validation after erase/reuse.
+- A Host-managed physical stripe spans the same block index within one configurable Parallelism Group. `device`, `stack`, and custom lane scopes preserve a fixed O(1) LPN→PPA/PPA→LPN interleave while exposing stripe width, GC granularity, recovery cost, and failure-domain tradeoffs.
 - Source-aware arbitration separates User, Recovery, Maintenance, Mapping, Refresh, and GC traffic. Critical Recovery and foreground reads receive priority, while configurable aging prevents background starvation.
 - Recovery and explicit Host GC use a shared timed CopyEngine. Live pages traverse NAND Read, DataFabric, Host D2H/H2D, DataFabric, and NAND Program before atomic remap and multi-lane source erase. Failed destination stripes are aborted and retried without losing the active source.
 - CopyEngine reads are pipelined with configurable read-ahead, in-flight Read/Program limits, and a capacity-bounded Host Copy Buffer. Reads may complete out of order, while destination slots are reserved strictly in increasing order. A destination failure first drains already-issued work before abort/erase/retry.
@@ -31,7 +31,7 @@ HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style
 - `ResourceTracker` accumulates Array/Fabric/Host occupancy and overlap online with memory bounded by topology. Queue depth is interval-sampled rather than retained at every state change.
 - `tools/experiment_runner.py` expands Cartesian parameter sweeps, runs them in parallel, records Git SHA and SHA-256 hashes, preserves input and fully resolved configs, aggregates metrics, and creates dependency-free SVG plots.
 
-Explicit in-place Refresh remains available as a maintenance operation. Automatic Refresh uses copy/remap/erase semantics. v0.2.7 adds a repeatable model-validation gate covering scaling, mapping, CopyEngine, GC, Refresh, wear, resources, and timing. Wear leveling, temperature-aware retention, detailed voltage-threshold distributions, HBM overlap, and packet-level UCIe remain outside v0.2.7.
+Explicit in-place Refresh remains available as a maintenance operation. Automatic Refresh uses copy/remap/erase semantics. v0.2.7 added a repeatable model-validation gate; v0.3.0 adds configurable Parallelism Groups while retaining full-device stripes by default. Wear leveling, temperature-aware retention, detailed voltage-threshold distributions, HBM overlap, and packet-level UCIe remain outside v0.3.0.
 
 The reliability model is command-level rather than bit-level: each read samples a raw error count from a Poisson distribution, ECC corrects counts within `ecc_correctable_bits`, and each retry multiplies BER by `retry_ber_multiplier`. A failed program consumes its sequential-program position but does not replace the previous L2P mapping.
 
@@ -80,6 +80,8 @@ Multi-plane grouping requires the same operation, die, block index, and page ind
 The supplied baseline is a FLINT-like research configuration, not a claim about a mandatory HBF standard timing or topology.
 
 The v0.2 Host-managed mapping contract and implementation status are documented in [`docs/HOST_MANAGED_STRIPE_MAPPING.md`](docs/HOST_MANAGED_STRIPE_MAPPING.md). Automatic Refresh details are in [`docs/V0.2.4_AUTOMATIC_REFRESH.md`](docs/V0.2.4_AUTOMATIC_REFRESH.md).
+
+Parallelism Group geometry and compatibility are documented in [`docs/V0.3.0_PARALLELISM_GROUPS.md`](docs/V0.3.0_PARALLELISM_GROUPS.md). Run its example with `./build/hbfsim configs/hbf_parallelism_groups.yaml traces/parallelism_groups.csv`.
 
 Run the supplied four-point reproducible sweep with `python3 tools/experiment_runner.py experiments/example_sweep.json`. See [`docs/V0.2.6_SCALABLE_STATS_EXPERIMENTS.md`](docs/V0.2.6_SCALABLE_STATS_EXPERIMENTS.md) for the manifest schema and output contract.
 

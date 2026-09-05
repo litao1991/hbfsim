@@ -15,6 +15,7 @@ REPO = Path(__file__).resolve().parents[1]
 DEFAULT_TESTS = (
     "model_validation",
     "stripe_mapping",
+    "parallelism_group",
     "copy_engine",
     "host_gc",
     "refresh_manager",
@@ -36,7 +37,7 @@ def run_test(build_dir: Path, name: str) -> dict[str, object]:
     started = datetime.now(timezone.utc)
     process = subprocess.run(
         ["ctest", "--test-dir", str(build_dir), "--output-on-failure",
-         "-R", f"^{name}$"],
+         "--no-tests=error", "-R", f"^{name}$"],
         text=True, capture_output=True, check=False,
     )
     ended = datetime.now(timezone.utc)
