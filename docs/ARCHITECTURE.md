@@ -190,21 +190,28 @@ Program/Erase active
 
 生产执行路径按 `INITIALIZE → WARMUP → MEASURE → DRAIN` 推进。Warmup 请求完成后才读取 Measurement 的第一条 trace；若原始时间戳早于 Warmup 完成时间，Measurement 整体平移，保持请求间隔不变。
 
-## 9. 扩展接口
+## 9. v0.2 Host-managed 条带映射
+
+v0.2 不采用传统逐 Page Reverse Mapping，而是在上层保证逻辑地址和物理地址均按固定条带顺序写入的前提下，使用条带描述符和可逆交织公式完成 LPN/PPA 双向计算。正常路径只保存 `logical_base_lpn`、物理条带身份、`generation`、写入 frontier 和状态 bitmap；跳写、部分迁移等偏离规则的情况才按需分配稀疏异常映射。
+
+Program Failure 和 GC 均由 Host 感知并主动发起数据 Copy。目标条带完成并 Seal 之前，旧条带保持 ACTIVE；只有 `REMAP_COMMIT` 能原子切换权威映射。完整设计见 [HOST_MANAGED_STRIPE_MAPPING.md](HOST_MANAGED_STRIPE_MAPPING.md)。
+
+## 10. 扩展接口
 
 建议后续按以下边界扩展：
 
-- GC/FTL：在 Mapper 之上增加 block allocator、victim selector 和内部搬移请求；
+- Host-managed lifecycle：增加 StripeAllocator、StripeMappingTable、RecoveryManager 和 HostGcManager；
 - Wear leveling：使用 `erase_count` 驱动 block 选择；
 - Retention/Read disturb：在 ReliabilityModel 中根据时间和读次数动态计算 RBER；
 - Thermal：根据 Stack 功耗状态动态缩放时序；
 - Protocol：在 Host Link 外增加 packet/flit 与 credit 模型；
 - 并行事件：保持事件语义不变，再按 Stack 分区并行化。
 
-## 10. 当前边界
+## 11. 当前边界
 
 - Multi-plane 是兼容命令级合并，不模拟厂商专有命令序列；
 - Cache Program 为单页缓存，不模拟任意深度流水；
 - ECC 只反映纠错能力和延迟结果，不模拟编码器面积与能耗；
 - Suspend/Resume 不模拟模拟电压恢复细节；
 - `tCCS/tADL/tWHR` 是资源可用时间约束，不是引脚波形仿真。
+- 条带级隐式映射、Host Recovery 和 Host GC 是已确定的 v0.2 设计，尚未计入 v0.1.1 可执行能力。

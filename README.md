@@ -64,4 +64,6 @@ Multi-plane grouping requires the same operation, die, block index, and page ind
 
 The supplied baseline is a FLINT-like research configuration, not a claim about a mandatory HBF standard timing or topology.
 
+The planned v0.2 Host-managed mapping contract is documented in [`docs/HOST_MANAGED_STRIPE_MAPPING.md`](docs/HOST_MANAGED_STRIPE_MAPPING.md). It uses sequential logical/physical stripes, formula-based implicit reverse mapping, generation checks, and Host-driven recovery/GC rather than a device-managed page-level FTL.
+
 For a write/erase/rewrite lifecycle smoke test, use `traces/read_write_erase.csv` with a small configuration. In `host_managed` mode, a completed erase releases old L2P entries and resets the frontier when the erased block is the current allocation block. The automated erase test also enables strict validation and reads back the rewritten page.
