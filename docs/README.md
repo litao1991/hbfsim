@@ -1,6 +1,6 @@
 # HBFSim 设计文档
 
-本目录记录 HBFSim v0.4.0 的架构、模型语义和实验方法。文档以当前代码实现为准。
+本目录记录 HBFSim v0.4.1 的架构、模型语义和实验方法。文档以当前代码实现为准。
 
 ## 文档索引
 
@@ -24,6 +24,7 @@
 - [V0.3.8_DLU_OBSERVABILITY.md](V0.3.8_DLU_OBSERVABILITY.md)：DLU 聚合时延、H2D 成本、统计和 Deadline Heap。
 - [V0.3.9_AUTO_ERASE_EVENTS.md](V0.3.9_AUTO_ERASE_EVENTS.md)：Page-0 Auto-Erase 的独立 Erase/Program 事件阶段。
 - [V0.4.0_BANK_READ_CACHE.md](V0.4.0_BANK_READ_CACHE.md)：Bank 命令域与双条目 4KiB Read Cache。
+- [V0.4.1_ARCHITECTURE_REFACTOR.md](V0.4.1_ARCHITECTURE_REFACTOR.md)：行为冻结下的组件 ownership、头文件与源码目录重构。
 
 ## 设计定位
 
@@ -31,7 +32,7 @@ HBFSim 是面向 HBF 风格 NAND 堆叠设备的单线程、trace-driven、离�
 
 如文档与代码不一致，应优先检查：
 
-1. `include/hbfsim/core.h` 中的数据结构和公开接口；
-2. `src/scheduler.cpp` 中的准入、仲裁与高级命令逻辑；
-3. `src/events.cpp` 中的完成事件和状态迁移；
+1. `include/hbfsim/` 下对应组件的窄头文件；
+2. `src/controller/scheduler.cpp` 中的准入、仲裁与高级命令逻辑；
+3. `src/kernel/events.cpp` 中的完成事件和状态迁移；
 4. `tests/test_advanced.cpp` 中的可执行语义断言。

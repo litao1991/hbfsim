@@ -1,4 +1,4 @@
-#include "hbfsim/core.h"
+#include "hbfsim/hbf_system.h"
 
 #include <stdexcept>
 #include <utility>
@@ -179,13 +179,14 @@ HbfSystem::HbfSystem(const Config& config)
     : profile_(config.simulation_profile),
       protocol_abstraction_(config.protocol_abstraction),
       capabilities_(capabilities_for(config)),
+      topology_(config),
       channels_(config),
-      mapper_(config, channels_),
+      frontend_(config, channels_),
+      mapper_(config, channels_, topology_),
       host_router_(config, channels_),
-      protocol_validator_(config, channels_),
-      axi_(config),
-      dlu_assembler_(config),
       reliability_(config),
+      media_(config, topology_),
+      controller_(config, media_),
       host_gc_manager_(config),
       refresh_manager_(config) {}
 

@@ -23,6 +23,7 @@ DEFAULT_TESTS = (
     "spec_semantic",
     "spec_media_mapping",
     "spec_read_cache",
+    "component_boundaries",
     "model_validation",
     "stripe_mapping",
     "parallelism_group",

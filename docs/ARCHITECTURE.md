@@ -1,4 +1,4 @@
-# HBFSim v0.4.0 架构设计
+# HBFSim v0.4.1 架构设计
 
 ## 1. 目标与范围
 
@@ -22,15 +22,16 @@ flowchart LR
     CR --> S
     CR --> SYS[HbfSystem Composition Root]
     S --> SYS
+    SYS --> P[ProtocolFrontend]
+    SYS --> BC[BaseDieController]
+    SYS --> N[NandMediaSystem]
     SYS --> M[AddressMapper]
-    SYS --> HR[HostRouter]
-    SYS --> R[ReliabilityModel]
-    SYS --> MG[HostGcManager / RefreshManager]
-    HR --> H[Full-duplex HostInterface]
-    S --> F[Base-Die DataFabric]
-    S --> Q[Scheduler]
-    Q --> N[NAND State and Events]
-    N --> R
+    SYS --> X[CopyEngine / Managers]
+    P --> CH[Channel / AXI / DLU]
+    BC --> Q[MediaScheduler]
+    BC --> F[InterconnectModel]
+    N --> TP[NandTopology / Bank Cache]
+    N --> R[ReliabilityModel]
     N --> ST[StatsCollector / ResourceTracker]
     ST --> O[Summary / Breakdown / Occupancy CSVs]
 ```
@@ -44,35 +45,28 @@ flowchart LR
 Stripe Mapping、Copy GC 和 Migration Recovery 等研究扩展。Profile 是模型选择与
 结果解释边界，不等同于“已经实现全部规范”。
 
-`HbfSystem` 是设备模型的唯一组合根，拥有 Mapper、Host Router、Reliability、Host
-GC 与 Refresh 服务。`Simulator` 拥有时间、事件、资源和请求生命周期。v0.3.1 为兼容
-现有事件实现保留指向这些服务的非拥有引用；后续新组件应进入 `HbfSystem`，而不是新增
-`Simulator` 所有权。
+`HbfSystem` 是设备模型的唯一组合根，拥有 `ProtocolFrontend`、`BaseDieController`、
+`NandMediaSystem`、Mapper、Reliability、CopyEngine、Host GC 与 Refresh。`Simulator`
+只保留时间/事件、活动请求生命周期、仿真阶段和统计协调，不再保存指向子组件的过渡引用。
 
 ## 3. 源码模块
 
 | 文件 | 职责 |
 |---|---|
 | `src/hbf_system.cpp` | Profile 能力、`HbfResponse` 语义与设备组件组合根 |
-| `src/protocol.cpp` | Channel/AXI 地址域、AXI ID 保序、DLU 聚合与 Pending Read 查询 |
-| `src/config.cpp` | YAML 子集解析、单位解析和配置合法性校验 |
-| `src/trace.cpp` | `IRequestSource` 流式接口、CSV 逐条读取和时间戳校验 |
-| `src/event_queue.cpp` | 确定性事件优先队列 |
-| `src/mapper.cpp` | Mapping policy 选择以及 Simulator 到条带映射的适配 |
-| `src/stripe_mapping.cpp` | Host-managed 条带分配、隐式双向映射、位图、generation 和原子 remap |
-| `src/host_gc.cpp` | Host GC 水位控制、确定性 Victim 选择、无可回收空间抑制和自动任务准入 |
-| `src/refresh_manager.cpp` | Retention Deadline 扫描、Refresh 任务准入和定时唤醒 |
-| `src/copy_engine.cpp` | Recovery/Host GC/Refresh 流水 Copy、Host replay、缓冲区 credit、重试、提交和源条带清理 |
-| `src/link.cpp` | 独立 Host 路由、全双工 HostInterface、显式端口/总带宽 DataFabric |
-| `src/reliability.cpp` | erase_count 感知的 Program/Erase failure、Poisson 位错误、ECC 与 Retry 抽样 |
-| `src/resource_tracker.cpp` | 在线 Array/Fabric/Host 占用、重叠和并发度面积累计 |
-| `src/resolved_config.cpp` | 将所有默认值和最终配置序列化为 resolved YAML |
-| `src/scheduler.cpp` | 来源感知队列、优先级与 aging、ready 判定、Multi-plane、Cache、Suspend/Resume |
-| `src/events.cpp` | 完成事件、Page/Block 状态迁移、失败处理与统计更新 |
-| `src/simulator.cpp` | 对象构造、请求拆分、资源连接、事件循环和状态查询 |
-| `src/stats.cpp` | 固定内存分位数、延迟分解、采样队列和资源占用输出 |
+| `src/protocol/` | Channel/AXI/DLU 语义，以及 Host 请求 admission/completion 的 `ProtocolFrontend` |
+| `src/config/` | YAML 子集解析、单位/合法性校验和 resolved configuration 输出 |
+| `src/frontend/` | `IRequestSource` 流式接口、CSV 逐条读取和时间戳校验 |
+| `src/kernel/` | 确定性事件队列、请求生命周期、事件循环与完成状态迁移 |
+| `src/controller/` | `BaseDieController`、来源感知调度和 Host/Fabric 互连资源 |
+| `src/media/` | `NandTopology`、介质状态、Bank Read Cache 和可靠性模型 |
+| `src/mapping/` | Mapping policy 选择以及逻辑地址到物理介质的映射 |
+| `src/management/` | Retention Deadline 扫描、Refresh 任务准入和定时唤醒 |
+| `src/extensions/` | Host-managed 条带、CopyEngine、Program Recovery 与 Host GC |
+| `src/stats/` | 在线资源占用、固定内存分位数、队列采样和结果输出 |
 
-公共数据结构和接口集中在 `include/hbfsim/core.h`。
+公共接口按 `common/config/protocol/controller/media/mapping/management/extension/stats`
+拆分；`include/hbfsim/core.h` 仅作为源代码兼容 umbrella。
 
 ## 4. 设备与资源层次
 

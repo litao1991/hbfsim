@@ -1,8 +1,10 @@
-# HBFSim v0.4.0
+# HBFSim v0.4.1
 
 HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style NAND stacks. It models performance-relevant resources rather than packet- or bit-level hardware details.
 
-## Included through v0.4.0
+## Included through v0.4.1
+
+- v0.4.1 is a behavior-preserving ownership refactor: public declarations are split into narrow headers, `HbfSystem` composes protocol/controller/media/extension components, and `Simulator` no longer owns device media, cache, interconnect, or CopyEngine state.
 
 - Explicit `media_research`, `hbf_v0_7`, and `ai_system` simulation profiles separate compatibility experiments from the specification-oriented path. HBF/AI profiles default research extensions off.
 - `HbfSystem` is now the device-model composition root for mapping, routing, reliability, Host GC, and Refresh services; `Simulator` retains time and event ownership.
@@ -45,7 +47,7 @@ HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style
 - `ResourceTracker` accumulates Array/Fabric/Host occupancy and overlap online with memory bounded by topology. Queue depth is interval-sampled rather than retained at every state change.
 - `tools/experiment_runner.py` expands Cartesian parameter sweeps, runs them in parallel, records Git SHA and SHA-256 hashes, preserves input and fully resolved configs, aggregates metrics, and creates dependency-free SVG plots.
 
-Explicit in-place Refresh remains available as a maintenance operation. Automatic Refresh uses copy/remap/erase semantics. v0.2.7 added a repeatable model-validation gate; v0.3.0 added configurable Parallelism Groups while retaining full-device stripes by default. Wear leveling, temperature-aware retention, detailed voltage-threshold distributions, HBM overlap, Batch Read, Host-driven Retry/Replay, and packet-level UCIe remain outside v0.4.0.
+Explicit in-place Refresh remains available as a maintenance operation. Automatic Refresh uses copy/remap/erase semantics. v0.2.7 added a repeatable model-validation gate; v0.3.0 added configurable Parallelism Groups while retaining full-device stripes by default. Wear leveling, temperature-aware retention, detailed voltage-threshold distributions, HBM overlap, Batch Read, Host-driven Retry/Replay, and packet-level UCIe remain outside v0.4.1.
 
 The reliability model is command-level rather than bit-level: each read samples a raw error count from a Poisson distribution, ECC corrects counts within `ecc_correctable_bits`, and each retry multiplies BER by `retry_ber_multiplier`. A failed program consumes its sequential-program position but does not replace the previous L2P mapping.
 
@@ -54,27 +56,19 @@ The reliability model is command-level rather than bit-level: each read samples 
 The implementation is split by responsibility so that NAND behavior and experiment plumbing can evolve independently:
 
 ```text
-src/config.cpp      YAML subset and unit parsing
-src/hbf_system.cpp  profile capabilities, response/status types, composition
-src/protocol.cpp    Channel/AXI address model, ordering, and DLU assembly
-src/trace.cpp       streaming IRequestSource and CSV trace input
-src/event_queue.cpp deterministic event queue
-src/mapper.cpp      mapping-policy selection and simulator adapter
-src/stripe_mapping.cpp Host-managed stripe allocation, implicit P2L, lifecycle
-src/host_gc.cpp    Host-side watermarks, victim selection, and GC admission
-src/copy_engine.cpp pipelined Recovery/Host-GC copy and bounded buffering
-src/link.cpp        HostRouter, full-duplex HostInterface, and DataFabric
-src/reliability.cpp seeded program-failure, raw-error, ECC, and retry model
-src/resource_tracker.cpp online topology-bounded occupancy/overlap statistics
-src/resolved_config.cpp complete effective configuration serialization
-src/scheduler.cpp   queues, readiness checks, batching, cache, suspend/resume
-src/events.cpp      command completion and NAND state transitions
-src/stats.cpp       fixed-memory latency, sampled queues, and CSV metrics
-src/simulator.cpp   construction, request splitting, resources, and event loop
-src/internal.h      private parsing helpers shared by config/trace
+src/kernel/       simulator lifecycle, event queue, event completion
+src/protocol/     Channel/AXI/DLU semantics and ProtocolFrontend
+src/controller/   BaseDieController, scheduling policy, host/fabric resources
+src/media/        topology, NAND state, Bank Read Cache, reliability
+src/mapping/      media placement
+src/management/   specification-oriented maintenance
+src/extensions/   Host-managed stripes, CopyEngine, experimental Copy GC
+src/frontend/     streaming CSV input
+src/stats/        online resource and result statistics
+src/config/       parsing and resolved configuration
 ```
 
-`include/hbfsim/core.h` remains the public model interface; there is no longer a monolithic `core.cpp`.
+`include/hbfsim/core.h` is now a compatibility umbrella over narrow component headers. New code should include the owning header directly. See [`docs/V0.4.1_ARCHITECTURE_REFACTOR.md`](docs/V0.4.1_ARCHITECTURE_REFACTOR.md).
 
 ## Build and run
 

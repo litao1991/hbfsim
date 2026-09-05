@@ -1,11 +1,13 @@
 #pragma once
 
-#include "hbfsim/core.h"
-
-#include <cctype>
 #include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <map>
 #include <stdexcept>
 #include <sstream>
+#include <string>
+#include <vector>
 
 namespace hbfsim::detail {
 
