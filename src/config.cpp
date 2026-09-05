@@ -168,6 +168,10 @@ Config Config::from_yaml_file(const std::string& path) {
   detail::assign_if(values, "scheduler.max_consecutive_reads", config.max_consecutive_reads, integer);
   detail::assign_if(values, "host_management.auto_recovery", config.auto_recovery_enabled, parse_bool);
   detail::assign_if(values, "host_management.max_recovery_attempts", config.max_recovery_attempts, integer);
+  detail::assign_if(values, "copy_engine.max_inflight_reads", config.copy_max_inflight_reads, integer);
+  detail::assign_if(values, "copy_engine.max_inflight_programs", config.copy_max_inflight_programs, integer);
+  detail::assign_if(values, "copy_engine.copy_buffer_size", config.copy_buffer_size, parse_size);
+  detail::assign_if(values, "copy_engine.prefetch_window_pages", config.copy_prefetch_window_pages, integer);
   detail::assign_if(values, "nand.strict_media_validation", config.strict_media_validation, parse_bool);
   detail::assign_if(values, "nand.features.suspend_resume", config.suspend_resume_enabled, parse_bool);
   detail::assign_if(values, "nand.features.multi_plane", config.multi_plane_enabled, parse_bool);
@@ -197,6 +201,10 @@ void Config::validate() const {
       host_bw_bytes_per_ns <= 0.0 || internal_bw_bytes_per_ns <= 0.0 ||
       internal_port_bw_bytes_per_ns <= 0.0)
     throw std::runtime_error("invalid zero-valued HBF topology or link");
+  if (copy_max_inflight_reads == 0 || copy_max_inflight_programs == 0 ||
+      copy_prefetch_window_pages == 0 || copy_buffer_size < page_size)
+    throw std::runtime_error(
+        "copy_engine limits must be non-zero and its buffer must fit a page");
   const auto max_u32 = std::numeric_limits<std::uint32_t>::max();
   const std::uint64_t planes_per_stack =
       static_cast<std::uint64_t>(dies_per_stack) * planes_per_die;

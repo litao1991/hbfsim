@@ -53,6 +53,11 @@ mapping:
 host_management:
   auto_recovery: false
   max_recovery_attempts: 3
+copy_engine:
+  max_inflight_reads: 32
+  max_inflight_programs: 8
+  copy_buffer_size: 2MiB
+  prefetch_window_pages: 64
 scheduler:
   write_starvation_us: 10
   source_aging_ns: 1000000

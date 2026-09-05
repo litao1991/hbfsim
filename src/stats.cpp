@@ -146,6 +146,18 @@ void StatsCollector::record_copy_job(TransactionSource source, bool failed) {
   }
 }
 
+void StatsCollector::record_copy_buffer_high_watermark(
+    TransactionSource source, std::uint64_t bytes) {
+  auto& high_watermark = copy_buffer_high_watermarks_[source];
+  high_watermark = std::max(high_watermark, bytes);
+}
+
+std::uint64_t StatsCollector::copy_buffer_high_watermark(
+    TransactionSource source) const {
+  const auto it = copy_buffer_high_watermarks_.find(source);
+  return it == copy_buffer_high_watermarks_.end() ? 0 : it->second;
+}
+
 std::uint64_t StatsCollector::source_bytes(TransactionSource source,
                                            OpType op) const {
   const auto it = source_bytes_.find(std::make_pair(source, op));
@@ -246,6 +258,11 @@ void StatsCollector::write(const std::string& output_dir,
           << "\nrecovery_p99_latency_ns,"
           << recovery_latencies_.percentile(0.99)
           << "\nhost_gc_mean_latency_ns," << gc_latencies_.mean()
+          << "\nrecovery_copy_buffer_high_watermark_bytes,"
+          << copy_buffer_high_watermark(TransactionSource::Recovery)
+          << "\nhost_gc_copy_buffer_high_watermark_bytes,"
+          << copy_buffer_high_watermark(
+                 TransactionSource::GarbageCollection)
           << "\nstripe_write_amplification,"
           << (source_bytes(TransactionSource::User, OpType::Write) == 0
                   ? 0.0

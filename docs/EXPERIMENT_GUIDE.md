@@ -114,6 +114,10 @@ Read/Write 的 `size` 必须非零。Erase/Refresh 使用地址定位 Block，si
 | `scheduler.max_consecutive_reads` | 连续读上限 |
 | `host_management.auto_recovery` | Program Failure 后由仿真 Host 自动运行 Recovery Copy |
 | `host_management.max_recovery_attempts` | destination 失败后的最大条带构建次数 |
+| `copy_engine.max_inflight_reads` | 单个 Copy job 最大在途 NAND Read 数 |
+| `copy_engine.max_inflight_programs` | 单个 Copy job 最大在途 destination Program 数 |
+| `copy_engine.copy_buffer_size` | Host Copy Buffer 容量；不得小于一个 Page |
+| `copy_engine.prefetch_window_pages` | 相对顺序 Program frontier 的最大 Read-ahead 窗口 |
 
 `burst_stripe` 要求 burst_size 是 page_size 的整数倍，并且每个 Stack 的 Page 容量能容纳整数个 burst。
 
@@ -146,6 +150,7 @@ Read/Write 的 `size` 必须非零。Erase/Refresh 使用地址定位 Block，si
 - `program_failure_notices`、`remap_commits`、`aborted_migrations`；
 - Recovery/Host GC 完成与失败 job 数；
 - Recovery/Host GC Read/Program bytes、恢复延迟和条带写放大；
+- Recovery/Host GC Copy Buffer high-water mark；
 - `corrected_reads`、`uncorrectable_reads`、`read_retries`；
 - makespan 与 measurement duration；
 - mean latency、p50/p95/p99/p99.9 latency；

@@ -82,6 +82,10 @@ struct Config {
   std::uint32_t max_consecutive_reads = 64;
   bool auto_recovery_enabled = false;
   std::uint32_t max_recovery_attempts = 3;
+  std::uint32_t copy_max_inflight_reads = 32;
+  std::uint32_t copy_max_inflight_programs = 8;
+  std::uint64_t copy_buffer_size = 2 * 1024 * 1024;
+  std::uint32_t copy_prefetch_window_pages = 64;
   bool strict_media_validation = false;
   bool suspend_resume_enabled = false;
   bool multi_plane_enabled = false;
@@ -264,6 +268,7 @@ struct SubRequest {
   PhysicalAddr paddr;
   std::optional<PhysicalAddr> old_paddr;
   std::optional<std::uint64_t> copy_job_id;
+  std::optional<std::uint32_t> copy_slot;
   SimTime arrival_time = 0;
   SimTime enqueue_time = 0;
   SimTime issue_time = 0;
@@ -533,6 +538,8 @@ class StatsCollector {
   void record_remap_commit(TransactionSource source, SimTime latency_ns);
   void record_aborted_migration() { ++aborted_migrations_; }
   void record_copy_job(TransactionSource source, bool failed);
+  void record_copy_buffer_high_watermark(TransactionSource source,
+                                         std::uint64_t bytes);
   void set_topology(std::uint32_t stacks, std::uint32_t dies_per_stack,
                     std::uint32_t planes_per_die,
                     std::uint32_t ports_per_stack,
@@ -561,6 +568,8 @@ class StatsCollector {
   }
   std::uint64_t completed_gc_jobs() const { return completed_gc_jobs_; }
   std::uint64_t failed_gc_jobs() const { return failed_gc_jobs_; }
+  std::uint64_t copy_buffer_high_watermark(
+      TransactionSource source) const;
 
  private:
   struct Interval { SimTime start = 0; SimTime end = 0; };
@@ -612,6 +621,8 @@ class StatsCollector {
       source_failures_;
   LatencyHistogram recovery_latencies_;
   LatencyHistogram gc_latencies_;
+  std::map<TransactionSource, std::uint64_t>
+      copy_buffer_high_watermarks_;
   std::vector<std::vector<Interval>> stack_array_intervals_;
   std::vector<std::vector<Interval>> stack_fabric_intervals_;
   std::vector<std::vector<Interval>> stack_host_intervals_;
@@ -643,6 +654,7 @@ class Simulator {
   std::size_t active_copy_jobs() const { return copy_jobs_.size(); }
 
  private:
+  struct CopyJob;
   void schedule(SimTime when, EventType type, std::uint64_t request_id,
                 std::uint64_t subreq_id = 0);
   void handle(const Event& event);
@@ -691,8 +703,9 @@ class Simulator {
                                std::optional<std::uint32_t> replay_slot,
                                bool measured, SimTime now);
   void advance_copy_job(std::uint64_t job_id, SimTime now);
-  void handle_copy_completion(std::uint64_t job_id, OpType op,
-                              bool failed, SimTime now);
+  void handle_copy_completion(std::uint64_t job_id,
+                              std::optional<std::uint32_t> slot,
+                              OpType op, bool failed, SimTime now);
   void enqueue_copy_read(std::uint64_t job_id, std::uint32_t slot,
                          SimTime now);
   void enqueue_copy_program(std::uint64_t job_id, std::uint32_t slot,
@@ -705,21 +718,38 @@ class Simulator {
   void restart_copy_job(std::uint64_t job_id, SimTime now);
   void finish_copy_job(std::uint64_t job_id, SimTime now, bool failed);
   void start_ready_recoveries(SimTime now);
+  void reset_copy_attempt(CopyJob& job);
+  void handle_copy_failure_drain(std::uint64_t job_id, SimTime now);
 
   enum class CopyStage { Copying, ErasingSource, CleaningDestination };
+  enum class CopySlotStage {
+    Reading,
+    Buffered,
+    ProgrammingBuffered,
+    ProgrammingReplay,
+  };
   struct CopyJob {
     std::uint64_t id = 0;
     TransactionSource source = TransactionSource::Recovery;
     StripeId source_stripe;
     StripeId destination_stripe;
-    std::uint32_t next_slot = 0;
+    std::uint32_t next_read_slot = 0;
+    std::uint32_t next_program_slot = 0;
     std::uint32_t slot_limit = 0;
     std::optional<std::uint32_t> replay_slot;
     std::uint32_t attempts = 0;
     std::uint32_t pending_erases = 0;
+    std::uint32_t inflight_reads = 0;
+    std::uint32_t inflight_programs = 0;
+    std::uint64_t buffer_reserved_bytes = 0;
+    std::uint64_t buffer_used_bytes = 0;
+    std::uint64_t buffer_high_watermark = 0;
     SimTime start_time = 0;
     bool measured = true;
+    bool failure_pending = false;
+    bool retry_after_drain = false;
     CopyStage stage = CopyStage::Copying;
+    std::unordered_map<std::uint32_t, CopySlotStage> slots;
   };
   struct PendingRecovery {
     StripeId source_stripe;

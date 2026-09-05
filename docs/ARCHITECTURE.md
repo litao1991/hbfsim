@@ -1,4 +1,4 @@
-# HBFSim v0.2.1 架构设计
+# HBFSim v0.2.2 架构设计
 
 ## 1. 目标与范围
 
@@ -42,7 +42,7 @@ flowchart LR
 | `src/event_queue.cpp` | 确定性事件优先队列 |
 | `src/mapper.cpp` | Mapping policy 选择以及 Simulator 到条带映射的适配 |
 | `src/stripe_mapping.cpp` | Host-managed 条带分配、隐式双向映射、位图、generation 和原子 remap |
-| `src/copy_engine.cpp` | Recovery/Host GC 组合事务、Host replay、重试、提交和源条带清理 |
+| `src/copy_engine.cpp` | Recovery/Host GC 流水 Copy、Host replay、缓冲区 credit、重试、提交和源条带清理 |
 | `src/link.cpp` | 独立 Host 路由、全双工 HostInterface、显式端口/总带宽 DataFabric |
 | `src/reliability.cpp` | Program failure、Poisson 位错误、ECC 与 Retry 抽样 |
 | `src/scheduler.cpp` | 来源感知队列、优先级与 aging、ready 判定、Multi-plane、Cache、Suspend/Resume |
@@ -212,6 +212,7 @@ v0.2 不采用传统逐 Page Reverse Mapping，而是在上层保证逻辑地址
 - 访问 generation 校验和 Program Failure Notice。
 - `TransactionSource × OpType` 独立 FIFO、来源优先级和后台 aging；
 - 通用 CopyEngine 驱动的 Recovery 与显式 Host GC；
+- Read-ahead、容量受限 Host Copy Buffer、多在途 Read/Program 和严格顺序 destination slot 预留；
 - destination Program Failure 后 abort、重新分配和有限次数重试；
 - Copy 完成后的原子 remap 与 source 多 Lane Erase；
 - Recovery/GC 分来源流量、延迟、完成状态和写放大统计。
@@ -236,4 +237,4 @@ Program Failure 和 GC 均由 Host 感知并主动发起数据 Copy。`auto_reco
 - ECC 只反映纠错能力和延迟结果，不模拟编码器面积与能耗；
 - Suspend/Resume 不模拟模拟电压恢复细节；
 - `tCCS/tADL/tWHR` 是资源可用时间约束，不是引脚波形仿真。
-- 条带级映射、Recovery 和显式 Host GC 已进入 v0.2.1；Automatic Refresh、完整 extent/sparse fallback、自动 victim 策略和实验元数据仍未实现。
+- 条带级映射、Recovery、显式 Host GC 和流水 CopyEngine 已进入 v0.2.2；Automatic Refresh、完整 extent/sparse fallback、自动 victim 策略和实验元数据仍未实现。

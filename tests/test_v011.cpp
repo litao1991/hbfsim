@@ -63,6 +63,11 @@ int main() {
                    "host_management:\n"
                    "  auto_recovery: true\n"
                    "  max_recovery_attempts: 5\n"
+                   "copy_engine:\n"
+                   "  max_inflight_reads: 7\n"
+                   "  max_inflight_programs: 3\n"
+                   "  copy_buffer_size: 8KiB\n"
+                   "  prefetch_window_pages: 11\n"
                    "scheduler:\n"
                    "  source_aging_ns: 1234\n"
                    "nand:\n"
@@ -78,6 +83,10 @@ int main() {
           hbfsim::InitializationMode::Preconditioned);
     CHECK(parsed.auto_recovery_enabled);
     CHECK(parsed.max_recovery_attempts == 5);
+    CHECK(parsed.copy_max_inflight_reads == 7);
+    CHECK(parsed.copy_max_inflight_programs == 3);
+    CHECK(parsed.copy_buffer_size == 8 * 1024);
+    CHECK(parsed.copy_prefetch_window_pages == 11);
     CHECK(parsed.source_aging_ns == 1234);
     CHECK(parsed.program_failure_budget == 2);
   }

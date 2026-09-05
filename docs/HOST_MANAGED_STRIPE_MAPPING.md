@@ -4,7 +4,7 @@
 
 本文定义 HBFSim v0.2 的 Host-managed 映射、Program Failure 恢复和主动 GC 语义，也是实现状态清单。
 
-截至 v0.2.1，阶段 A/B 已完成；阶段 C 的失败通知、Host replay、真实数据搬运和 destination retry 已完成；阶段 D 支持 Host 显式选择 victim、有效 slot 搬运、原子提交和源条带擦除。Automatic Refresh、自动 victim 策略，以及完整 extent/sparse fallback 仍在后续阶段。
+截至 v0.2.2，阶段 A/B 已完成；阶段 C 的失败通知、Host replay、流水数据搬运和 destination retry 已完成；阶段 D 支持 Host 显式选择 victim、有效 slot 搬运、原子提交和源条带擦除。Automatic Refresh、自动 victim 策略，以及完整 extent/sparse fallback 仍在后续阶段。
 
 设计目标是利用上层提供的严格顺序约束，把传统逐 Page L2P/P2L 表收敛为条带级元数据，同时仍然准确模拟物理 Page 状态、数据搬运流量、资源竞争和失败恢复延迟。
 
@@ -232,7 +232,11 @@ source → STALE → ERASE/BAD
 
 复制期间 source 仍是读请求的权威版本，destination 处于构建状态。只有完整成功的 `REMAP_COMMIT` 能切换映射；如果 destination 再次失败，则放弃该 generation 并重新分配目标条带。
 
-v0.2.1 的 CopyEngine 会通过真实 Erase 事务回收被放弃的 destination；达到 `max_recovery_attempts` 后停止重试、保留 source 为活动权威版本，并记录失败的 Recovery job。
+v0.2.2 的 CopyEngine 会通过真实 Erase 事务回收被放弃的 destination；达到 `max_recovery_attempts` 后停止重试、保留 source 为活动权威版本，并记录失败的 Recovery job。
+
+CopyEngine 不再按 `READ_i → PROGRAM_i → READ_i+1` 串行执行。它在 `prefetch_window_pages` 范围内预取有效 slot，并同时受 `max_inflight_reads`、`max_inflight_programs` 和 `copy_buffer_size` 约束。Read 可以乱序完成并进入 Host Copy Buffer，但 destination 的 slot 只能按逻辑顺序预留；无效 slot 同样按顺序转换为 hole。Read 获得的 buffer credit 在目标 Program 完成后释放，因此慢 Program 会自然反压新的 Read。
+
+若任一在途 destination Program 失败，CopyEngine 停止发射新事务，等待已发射 Read/Program 全部完成，之后才执行 `ABORT_MIGRATION → ERASE destination → retry`。这样不会在 destination 仍有 reserved slot 时错误地切换 generation。状态表只保存预取窗口和在途 slot，不按完整条带容量物化每 Page 对象。
 
 ## 9. Host 主动 GC
 

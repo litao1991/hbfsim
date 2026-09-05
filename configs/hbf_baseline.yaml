@@ -59,6 +59,12 @@ mapping:
   policy: burst_stripe
   burst_size: 2MiB
 
+copy_engine:
+  max_inflight_reads: 32
+  max_inflight_programs: 8
+  copy_buffer_size: 2MiB
+  prefetch_window_pages: 64
+
 scheduler:
   write_starvation_us: 100
   max_consecutive_reads: 64

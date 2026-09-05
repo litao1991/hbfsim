@@ -1,8 +1,8 @@
-# HBFSim v0.2.1
+# HBFSim v0.2.2
 
 HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style NAND stacks. It models performance-relevant resources rather than packet- or bit-level hardware details.
 
-## Included in v0.1
+## Included through v0.2.2
 
 - Host commands and write/read payloads use separate staged events; requests are split into page-sized subrequests.
 - Stack → Die → Plane topology, with per-die and per-stack array-concurrency caps.
@@ -20,11 +20,12 @@ HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style
 - A Host-managed physical stripe spans the same block index on every configured Stack/Die/Plane lane. Its fixed interleave supports O(1) LPN→PPA and PPA→LPN, lazy state bitmaps, atomic replacement commits, and generation validation after erase/reuse.
 - Source-aware arbitration separates User, Recovery, Maintenance, Mapping, and GC traffic. Critical Recovery and foreground reads receive priority, while configurable aging prevents background starvation.
 - Recovery and explicit Host GC use a shared timed CopyEngine. Live pages traverse NAND Read, DataFabric, Host D2H/H2D, DataFabric, and NAND Program before atomic remap and multi-lane source erase. Failed destination stripes are aborted and retried without losing the active source.
+- CopyEngine reads are pipelined with configurable read-ahead, in-flight Read/Program limits, and a capacity-bounded Host Copy Buffer. Reads may complete out of order, while destination slots are reserved strictly in increasing order. A destination failure first drains already-issued work before abort/erase/retry.
 - CSV traces stream one record at a time. The production path enforces `INITIALIZE → WARMUP → MEASURE → DRAIN`; warm-up is fully drained before measured requests are admitted.
 - `empty`, `image_loaded`, and `preconditioned` initialization modes allow strict validation for read-only traces without allocating metadata for the full device.
 - Fixed-memory latency histograms report p50/p95/p99/p99.9. Additional CSVs expose transaction latency breakdown, queue depth, Stack array/fabric overlap, and Host Channel/DataPort/Die utilization.
 
-Refresh is accepted as an operation and has a timing path. Automatic refresh policy, GC/wear-leveling policy, HBM overlap, thermal behavior, detailed voltage-threshold distributions, and packet-level UCIe remain outside v0.1.
+Refresh is accepted as an operation and has a timing path. Automatic refresh policy, automatic Host GC policy, wear leveling, HBM overlap, thermal behavior, detailed voltage-threshold distributions, and packet-level UCIe remain outside v0.2.2.
 
 The reliability model is command-level rather than bit-level: each read samples a raw error count from a Poisson distribution, ECC corrects counts within `ecc_correctable_bits`, and each retry multiplies BER by `retry_ber_multiplier`. A failed program consumes its sequential-program position but does not replace the previous L2P mapping.
 
@@ -38,7 +39,7 @@ src/trace.cpp       streaming IRequestSource and CSV trace input
 src/event_queue.cpp deterministic event queue
 src/mapper.cpp      mapping-policy selection and simulator adapter
 src/stripe_mapping.cpp Host-managed stripe allocation, implicit P2L, lifecycle
-src/copy_engine.cpp Recovery/Host-GC composite transactions and retries
+src/copy_engine.cpp pipelined Recovery/Host-GC copy and bounded buffering
 src/link.cpp        HostRouter, full-duplex HostInterface, and DataFabric
 src/reliability.cpp seeded program-failure, raw-error, ECC, and retry model
 src/scheduler.cpp   queues, readiness checks, batching, cache, suspend/resume
@@ -59,7 +60,7 @@ ctest --test-dir build --output-on-failure
 ./build/hbfsim configs/hbf_baseline.yaml traces/example.csv
 ```
 
-The trace columns are `timestamp_ns,op,address,size,stream`; timestamps must be nondecreasing. Sizes may use `KiB`, `MiB`, `GiB`, or `TiB`; addresses accept decimal or `0x` hexadecimal notation. Results are emitted under `statistics.output_dir`. Besides `summary.csv` and `plane_utilization.csv`, v0.2.1 writes `latency_breakdown.csv`, `source_latency_breakdown.csv`, `resource_utilization.csv`, `queue_depth.csv`, `data_port_utilization.csv`, `die_utilization.csv`, and `host_channel_utilization.csv`.
+The trace columns are `timestamp_ns,op,address,size,stream`; timestamps must be nondecreasing. Sizes may use `KiB`, `MiB`, `GiB`, or `TiB`; addresses accept decimal or `0x` hexadecimal notation. Results are emitted under `statistics.output_dir`. Besides `summary.csv` and `plane_utilization.csv`, v0.2.2 writes `latency_breakdown.csv`, `source_latency_breakdown.csv`, `resource_utilization.csv`, `queue_depth.csv`, `data_port_utilization.csv`, `die_utilization.csv`, and `host_channel_utilization.csv`. The summary also reports per-source Copy Buffer high-water marks.
 
 The baseline uses `initialization.mode: image_loaded` with strict validation. Metadata is materialized lazily for pages referenced by reads, so a large read-only image does not require one in-memory object per NAND page.
 

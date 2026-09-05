@@ -1,5 +1,6 @@
 #include "hbfsim/core.h"
 
+#include <algorithm>
 #include <stdexcept>
 #include <vector>
 
@@ -58,6 +59,7 @@ std::uint64_t Simulator::start_copy_job(
   job.attempts = 1;
   job.start_time = now;
   job.measured = measured;
+  reset_copy_attempt(job);
   const auto id = job.id;
   copy_jobs_.emplace(id, std::move(job));
   advance_copy_job(id, now);
@@ -99,6 +101,7 @@ void Simulator::enqueue_copy_read(std::uint64_t job_id, std::uint32_t slot,
   subrequest.arrival_time = now;
   subrequest.host_route = request.host_route;
   subrequest.copy_job_id = job_id;
+  subrequest.copy_slot = slot;
   subrequest.critical = job.source == TransactionSource::Recovery;
   subrequest.latency.host_command_wait_ns = request.host_command_wait_ns;
   subrequest.latency.host_command_service_ns =
@@ -151,6 +154,7 @@ void Simulator::enqueue_copy_program(std::uint64_t job_id,
   subrequest.arrival_time = now;
   subrequest.host_route = request.host_route;
   subrequest.copy_job_id = job_id;
+  subrequest.copy_slot = slot;
   subrequest.critical = job.source == TransactionSource::Recovery;
   subrequest.latency.host_command_wait_ns = request.host_command_wait_ns;
   subrequest.latency.host_command_service_ns =
@@ -221,29 +225,102 @@ void Simulator::enqueue_stripe_erases(
   }
 }
 
+void Simulator::reset_copy_attempt(CopyJob& job) {
+  job.next_read_slot = 0;
+  job.next_program_slot = 0;
+  job.inflight_reads = 0;
+  job.inflight_programs = 0;
+  job.buffer_reserved_bytes = 0;
+  job.buffer_used_bytes = 0;
+  job.failure_pending = false;
+  job.retry_after_drain = false;
+  job.slots.clear();
+}
+
 void Simulator::advance_copy_job(std::uint64_t job_id, SimTime now) {
   auto& job = copy_jobs_.at(job_id);
+  if (job.stage != CopyStage::Copying) return;
+  if (job.failure_pending) {
+    handle_copy_failure_drain(job_id, now);
+    return;
+  }
+
   auto* mapping = mapper_.stripe_mapping();
   const auto& source = mapping->descriptor(job.source_stripe);
-  while (job.next_slot < job.slot_limit) {
-    const auto slot = job.next_slot;
-    if (source.valid_bitmap.test(slot)) {
-      enqueue_copy_read(job_id, slot, now);
-      return;
-    }
-    if (source.failed_bitmap.test(slot)) {
-      if (job.source != TransactionSource::Recovery ||
-          (job.replay_slot && *job.replay_slot != slot)) {
-        finish_copy_job(job_id, now, true);
-        return;
+  bool progress = true;
+  while (progress && !job.failure_pending) {
+    progress = false;
+    const auto window_end = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+        job.slot_limit,
+        static_cast<std::uint64_t>(job.next_program_slot) +
+            config_.copy_prefetch_window_pages));
+    while (job.next_read_slot < window_end &&
+           job.inflight_reads < config_.copy_max_inflight_reads) {
+      const auto slot = job.next_read_slot;
+      if (!source.valid_bitmap.test(slot)) {
+        ++job.next_read_slot;
+        progress = true;
+        continue;
       }
-      enqueue_copy_program(job_id, slot, now);
-      return;
+      const auto occupied = job.buffer_used_bytes +
+                            job.buffer_reserved_bytes;
+      if (config_.copy_buffer_size - occupied < config_.page_size) break;
+      job.slots.emplace(slot, CopySlotStage::Reading);
+      ++job.inflight_reads;
+      job.buffer_reserved_bytes += config_.page_size;
+      ++job.next_read_slot;
+      enqueue_copy_read(job_id, slot, now);
+      progress = true;
     }
-    mapping->reserve_hole(job.destination_stripe,
-                          source.logical_base_lpn + slot);
-    ++job.next_slot;
+
+    while (job.next_program_slot < job.slot_limit &&
+           job.inflight_programs < config_.copy_max_inflight_programs) {
+      const auto slot = job.next_program_slot;
+      if (source.failed_bitmap.test(slot)) {
+        if (job.source != TransactionSource::Recovery ||
+            (job.replay_slot && *job.replay_slot != slot)) {
+          job.failure_pending = true;
+          job.retry_after_drain = false;
+          break;
+        }
+        job.slots[slot] = CopySlotStage::ProgrammingReplay;
+        ++job.inflight_programs;
+        ++job.next_program_slot;
+        enqueue_copy_program(job_id, slot, now);
+        progress = true;
+        continue;
+      }
+      if (!source.valid_bitmap.test(slot)) {
+        mapping->reserve_hole(job.destination_stripe,
+                              source.logical_base_lpn + slot);
+        ++job.next_program_slot;
+        progress = true;
+        continue;
+      }
+      const auto state = job.slots.find(slot);
+      if (state == job.slots.end() ||
+          state->second == CopySlotStage::Reading)
+        break;
+      if (state->second != CopySlotStage::Buffered)
+        throw std::logic_error("copy slot is not ready for program");
+      state->second = CopySlotStage::ProgrammingBuffered;
+      ++job.inflight_programs;
+      ++job.next_program_slot;
+      enqueue_copy_program(job_id, slot, now);
+      progress = true;
+    }
   }
+
+  if (job.failure_pending) {
+    handle_copy_failure_drain(job_id, now);
+    return;
+  }
+  if (job.next_program_slot != job.slot_limit || job.inflight_reads != 0 ||
+      job.inflight_programs != 0)
+    return;
+  if (job.buffer_reserved_bytes != 0 || job.buffer_used_bytes != 0 ||
+      !job.slots.empty())
+    throw std::logic_error("copy pipeline drained with buffered data");
 
   auto& destination = mapping->descriptor(job.destination_stripe);
   if (destination.state == StripeState::Open)
@@ -254,8 +331,9 @@ void Simulator::advance_copy_job(std::uint64_t job_id, SimTime now) {
   enqueue_copy_erases(job_id, now);
 }
 
-void Simulator::handle_copy_completion(std::uint64_t job_id, OpType op,
-                                       bool failed, SimTime now) {
+void Simulator::handle_copy_completion(
+    std::uint64_t job_id, std::optional<std::uint32_t> slot, OpType op,
+    bool failed, SimTime now) {
   const auto job_it = copy_jobs_.find(job_id);
   if (job_it == copy_jobs_.end()) return;
   auto& job = job_it->second;
@@ -288,27 +366,69 @@ void Simulator::handle_copy_completion(std::uint64_t job_id, OpType op,
     job.destination_stripe = mapping->allocate_replacement(
         mapping->descriptor(job.source_stripe).logical_base_lpn);
     mapping->begin_migration(job.source_stripe);
-    job.next_slot = 0;
     ++job.attempts;
     job.stage = CopyStage::Copying;
+    reset_copy_attempt(job);
     advance_copy_job(job_id, now);
     return;
   }
-  if (failed) {
-    if (op == OpType::Write)
-      restart_copy_job(job_id, now);
-    else
-      finish_copy_job(job_id, now, true);
-    return;
-  }
+  if (!slot || (op != OpType::Read && op != OpType::Write))
+    throw std::logic_error("copy data completion is missing its slot");
+  const auto slot_it = job.slots.find(*slot);
+  if (slot_it == job.slots.end())
+    throw std::logic_error("unknown copy slot completion");
   if (op == OpType::Read) {
-    enqueue_copy_program(job_id, job.next_slot, now);
+    if (slot_it->second != CopySlotStage::Reading ||
+        job.inflight_reads == 0 ||
+        job.buffer_reserved_bytes < config_.page_size)
+      throw std::logic_error("copy read accounting invariant violated");
+    --job.inflight_reads;
+    job.buffer_reserved_bytes -= config_.page_size;
+    if (failed) {
+      job.slots.erase(slot_it);
+    } else {
+      slot_it->second = CopySlotStage::Buffered;
+      job.buffer_used_bytes += config_.page_size;
+      job.buffer_high_watermark =
+          std::max(job.buffer_high_watermark, job.buffer_used_bytes);
+    }
+  } else {
+    const bool buffered =
+        slot_it->second == CopySlotStage::ProgrammingBuffered;
+    if (!buffered &&
+        slot_it->second != CopySlotStage::ProgrammingReplay)
+      throw std::logic_error("copy program accounting invariant violated");
+    if (job.inflight_programs == 0 ||
+        (buffered && job.buffer_used_bytes < config_.page_size))
+      throw std::logic_error("copy program count underflow");
+    --job.inflight_programs;
+    if (buffered) job.buffer_used_bytes -= config_.page_size;
+    job.slots.erase(slot_it);
+  }
+
+  if (failed) {
+    if (!job.failure_pending)
+      job.retry_after_drain = op == OpType::Write;
+    else if (op == OpType::Read)
+      job.retry_after_drain = false;
+    job.failure_pending = true;
+  }
+  if (job.failure_pending) {
+    handle_copy_failure_drain(job_id, now);
     return;
   }
-  if (op != OpType::Write)
-    throw std::logic_error("copy job completion invariant violated");
-  ++job.next_slot;
   advance_copy_job(job_id, now);
+}
+
+void Simulator::handle_copy_failure_drain(std::uint64_t job_id,
+                                          SimTime now) {
+  auto& job = copy_jobs_.at(job_id);
+  if (job.inflight_reads != 0 || job.inflight_programs != 0) return;
+  const bool retry = job.retry_after_drain;
+  if (retry)
+    restart_copy_job(job_id, now);
+  else
+    finish_copy_job(job_id, now, true);
 }
 
 void Simulator::restart_copy_job(std::uint64_t job_id, SimTime now) {
@@ -337,6 +457,9 @@ void Simulator::finish_copy_job(std::uint64_t job_id, SimTime now,
                             it->second.measured, std::nullopt, now);
     }
   }
+  if (it->second.measured)
+    stats_.record_copy_buffer_high_watermark(
+        it->second.source, it->second.buffer_high_watermark);
   if (it->second.measured)
     stats_.record_copy_job(it->second.source, failed);
   copy_jobs_.erase(it);

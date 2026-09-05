@@ -57,6 +57,7 @@ void Simulator::complete_subrequest(std::uint64_t id, SimTime now) {
   sub.complete_time = now;
   const auto parent_id = sub.parent_id;
   const auto copy_job_id = sub.copy_job_id;
+  const auto copy_slot = sub.copy_slot;
   const auto completed_op = sub.op;
   const auto subrequest_failed = sub.failed;
   if (is_measured(parent_id))
@@ -73,7 +74,7 @@ void Simulator::complete_subrequest(std::uint64_t id, SimTime now) {
       stats_.record_request(request);
     requests_.erase(request_it);
     if (internal && copy_job_id)
-      handle_copy_completion(*copy_job_id, completed_op,
+      handle_copy_completion(*copy_job_id, copy_slot, completed_op,
                              subrequest_failed, now);
   }
 }
