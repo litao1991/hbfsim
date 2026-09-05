@@ -145,8 +145,9 @@ void Simulator::handle(const Event& event) {
       auto& sub = subrequests_.at(event.subreq_id);
       if (sub.array_completion_time != now_) break;
       auto& target = plane(sub.paddr);
-      const auto result =
-          reliability_.read_result(sub.bytes, sub.read_attempts);
+      auto& block = target.blocks.at(sub.paddr.block);
+      const auto result = reliability_.read_result(
+          sub.bytes, sub.read_attempts, block.erase_count);
       if (result.status == ReadErrorStatus::Uncorrectable &&
           sub.read_attempts < config_.max_read_retries) {
         if (is_measured(sub.parent_id))
@@ -160,7 +161,6 @@ void Simulator::handle(const Event& event) {
         schedule(done, EventType::NandReadDone, request.id, sub.id);
         break;
       }
-      auto& block = target.blocks.at(sub.paddr.block);
       if (result.status == ReadErrorStatus::Corrected) {
         bitmap_clear(block.failed_bitmap, sub.paddr.page);
         if (is_measured(sub.parent_id))
@@ -221,7 +221,7 @@ void Simulator::handle(const Event& event) {
                                   sub.array_active_since, now_);
       sub.latency.array_service_ns += now_ - sub.array_active_since;
       std::optional<ProgramFailureNotice> failure_notice;
-      if (reliability_.program_failed()) {
+      if (reliability_.program_failed(block.erase_count)) {
         clear_transient_page_state(sub.paddr);
         bitmap_set(block.failed_bitmap, config_.pages_per_block,
                    sub.paddr.page);
@@ -280,15 +280,25 @@ void Simulator::handle(const Event& event) {
                                   plane_index(sub.paddr),
                                   sub.array_active_since, now_);
       sub.latency.array_service_ns += now_ - sub.array_active_since;
-      block.state = BlockState::Free;
-      block.next_program_page = 0;
-      block.valid_pages = 0;
-      block.invalid_pages = 0;
-      block.valid_bitmap.clear();
-      block.invalid_bitmap.clear();
-      block.failed_bitmap.clear();
-      ++block.erase_count;
-      mapper_.on_erase(sub.paddr);
+      if (reliability_.erase_failed(block.erase_count)) {
+        sub.failed = true;
+        if (is_measured(sub.parent_id)) stats_.record_erase_failure();
+        retire_block(sub.paddr);
+      } else {
+        block.state = BlockState::Free;
+        block.next_program_page = 0;
+        block.valid_pages = 0;
+        block.invalid_pages = 0;
+        block.valid_bitmap.clear();
+        block.invalid_bitmap.clear();
+        block.failed_bitmap.clear();
+        ++block.erase_count;
+        if (config_.max_erase_cycles != 0 &&
+            block.erase_count >= config_.max_erase_cycles)
+          retire_block(sub.paddr);
+        else
+          mapper_.on_erase(sub.paddr);
+      }
       release_array(sub);
       target.active_subrequest.reset();
       target.busy = false;

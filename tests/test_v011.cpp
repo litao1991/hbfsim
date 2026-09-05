@@ -84,6 +84,11 @@ int main() {
                    "nand:\n"
                    "  reliability:\n"
                    "    program_failure_budget: 2\n"
+                   "    program_failure_rate_per_erase: 0.01\n"
+                   "    erase_failure_rate: 0.02\n"
+                   "    erase_failure_rate_per_erase: 0.003\n"
+                   "    raw_bit_error_rate_per_erase: 0.000001\n"
+                   "    max_erase_cycles: 3000\n"
                    "initialization:\n"
                    "  mode: preconditioned\n"
                    "mapping:\n"
@@ -112,6 +117,11 @@ int main() {
     CHECK(parsed.copy_prefetch_window_pages == 11);
     CHECK(parsed.source_aging_ns == 1234);
     CHECK(parsed.program_failure_budget == 2);
+    CHECK(parsed.program_failure_rate_per_erase == 0.01);
+    CHECK(parsed.erase_failure_rate == 0.02);
+    CHECK(parsed.erase_failure_rate_per_erase == 0.003);
+    CHECK(parsed.raw_bit_error_rate_per_erase == 0.000001);
+    CHECK(parsed.max_erase_cycles == 3000);
   }
 
   {

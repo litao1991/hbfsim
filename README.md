@@ -1,8 +1,8 @@
-# HBFSim v0.2.4
+# HBFSim v0.2.5
 
 HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style NAND stacks. It models performance-relevant resources rather than packet- or bit-level hardware details.
 
-## Included through v0.2.4
+## Included through v0.2.5
 
 - Host commands and write/read payloads use separate staged events; requests are split into page-sized subrequests.
 - Stack → Die → Plane topology, with per-die and per-stack array-concurrency caps.
@@ -23,12 +23,13 @@ HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style
 - CopyEngine reads are pipelined with configurable read-ahead, in-flight Read/Program limits, and a capacity-bounded Host Copy Buffer. Reads may complete out of order, while destination slots are reserved strictly in increasing order. A destination failure first drains already-issued work before abort/erase/retry.
 - `HostGcManager` starts Host-managed reclamation at a configurable free-stripe low watermark and continues toward a high watermark. It supports deterministic `invalid_ratio` and `greedy` victim selection, reserves overprovisioned stripes from Host-visible capacity, and directly erases fully invalid victims without allocating a destination.
 - `RefreshManager` tracks a retention deadline from each stripe's first successful program. It starts deadline/guard-time driven migration through the shared `CopyEngine`; Refresh is a separate transaction source so its contention with User Read and Host GC is measurable.
+- Block `erase_count` now raises configurable RBER, Program Failure, and Erase Failure probabilities. Erase failure or the configured P/E limit retires the affected block and, for Host-managed mapping, removes the entire physical stripe from allocation while reporting reduced usable capacity.
 - Trace `TRIM`/`INVALIDATE`/`DISCARD` requests explicitly invalidate Host-managed logical pages. Rewriting the range is legal only after reclamation has atomically removed the old mapping; implicit overwrite remains forbidden.
 - CSV traces stream one record at a time. The production path enforces `INITIALIZE → WARMUP → MEASURE → DRAIN`; warm-up is fully drained before measured requests are admitted.
 - `empty`, `image_loaded`, and `preconditioned` initialization modes allow strict validation for read-only traces without allocating metadata for the full device.
 - Fixed-memory latency histograms report p50/p95/p99/p99.9. Additional CSVs expose transaction latency breakdown, queue depth, Stack array/fabric overlap, and Host Channel/DataPort/Die utilization.
 
-Explicit in-place Refresh remains available as a maintenance operation. Automatic Refresh uses copy/remap/erase semantics. Cost-benefit/age/wear-aware GC policies, wear leveling, HBM overlap, thermal behavior, detailed voltage-threshold distributions, and packet-level UCIe remain outside v0.2.4.
+Explicit in-place Refresh remains available as a maintenance operation. Automatic Refresh uses copy/remap/erase semantics. Wear leveling, temperature-aware retention, detailed voltage-threshold distributions, HBM overlap, and packet-level UCIe remain outside v0.2.5.
 
 The reliability model is command-level rather than bit-level: each read samples a raw error count from a Poisson distribution, ECC corrects counts within `ecc_correctable_bits`, and each retry multiplies BER by `retry_ber_multiplier`. A failed program consumes its sequential-program position but does not replace the previous L2P mapping.
 

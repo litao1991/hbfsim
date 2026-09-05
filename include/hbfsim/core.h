@@ -110,11 +110,16 @@ struct Config {
   std::uint32_t max_multi_plane_width = 2;
   bool cache_program_enabled = false;
   double program_failure_rate = 0.0;
+  double program_failure_rate_per_erase = 0.0;
   std::uint64_t program_failure_budget = 0;
+  double erase_failure_rate = 0.0;
+  double erase_failure_rate_per_erase = 0.0;
   double raw_bit_error_rate = 0.0;
+  double raw_bit_error_rate_per_erase = 0.0;
   double retry_ber_multiplier = 0.25;
   std::uint32_t ecc_correctable_bits = 0;
   std::uint32_t max_read_retries = 0;
+  std::uint32_t max_erase_cycles = 0;
   std::uint64_t random_seed = 1;
   std::uint64_t max_requests = 0;
   std::uint64_t warmup_requests = 0;
@@ -223,12 +228,14 @@ class StripeMappingTable {
   void remap_commit(const StripeId& source, const StripeId& destination);
   void abort_migration(const StripeId& destination);
   void on_erase(const PhysicalAddr& block_addr);
+  bool retire_stripe(const PhysicalAddr& block_addr);
   bool validate_generation(const PhysicalAddr& paddr) const;
   const StripeDescriptor& descriptor(const StripeId& stripe) const;
   std::optional<StripeId> active_stripe(std::uint64_t lpn) const;
   std::size_t active_mapping_count() const { return active_.size(); }
   std::size_t free_stripe_count() const { return free_stripes_.size(); }
   std::size_t total_stripe_count() const { return descriptors_.size(); }
+  std::size_t usable_stripe_count() const { return usable_stripes_; }
   std::size_t host_visible_stripe_count() const {
     return host_visible_stripes_;
   }
@@ -248,6 +255,7 @@ class StripeMappingTable {
   std::deque<std::uint64_t> free_stripes_;
   std::map<std::uint64_t, StripeId> active_;
   std::size_t host_visible_stripes_ = 0;
+  std::size_t usable_stripes_ = 0;
 };
 
 struct HostGcDecision {
@@ -498,8 +506,10 @@ struct ReadErrorResult {
 class ReliabilityModel {
  public:
   explicit ReliabilityModel(const Config& config);
-  bool program_failed();
-  ReadErrorResult read_result(std::uint64_t bytes, std::uint32_t retry);
+  bool program_failed(std::uint32_t erase_count = 0);
+  bool erase_failed(std::uint32_t erase_count = 0);
+  ReadErrorResult read_result(std::uint64_t bytes, std::uint32_t retry,
+                              std::uint32_t erase_count = 0);
 
  private:
   const Config& config_;
@@ -617,6 +627,21 @@ class StatsCollector {
     ++program_failures_;
     ++program_failure_notices_;
   }
+  void record_erase_failure() { ++erase_failures_; }
+  void record_retired_block() { ++retired_blocks_; }
+  void record_retired_stripe(std::uint64_t capacity_loss_bytes) {
+    ++retired_stripes_;
+    usable_physical_capacity_bytes_ =
+        capacity_loss_bytes > usable_physical_capacity_bytes_
+            ? 0
+            : usable_physical_capacity_bytes_ - capacity_loss_bytes;
+  }
+  void set_capacity(std::uint64_t physical_bytes,
+                    std::uint64_t host_visible_bytes) {
+    total_physical_capacity_bytes_ = physical_bytes;
+    usable_physical_capacity_bytes_ = physical_bytes;
+    host_visible_capacity_bytes_ = host_visible_bytes;
+  }
   void record_remap_commit(TransactionSource source, SimTime latency_ns);
   void record_aborted_migration() { ++aborted_migrations_; }
   void record_copy_job(TransactionSource source, bool failed);
@@ -652,6 +677,12 @@ class StatsCollector {
   std::uint64_t corrected_reads() const { return corrected_reads_; }
   std::uint64_t uncorrectable_reads() const { return uncorrectable_reads_; }
   std::uint64_t program_failures() const { return program_failures_; }
+  std::uint64_t erase_failures() const { return erase_failures_; }
+  std::uint64_t retired_blocks() const { return retired_blocks_; }
+  std::uint64_t retired_stripes() const { return retired_stripes_; }
+  std::uint64_t usable_physical_capacity_bytes() const {
+    return usable_physical_capacity_bytes_;
+  }
   std::uint64_t program_failure_notices() const {
     return program_failure_notices_;
   }
@@ -717,6 +748,12 @@ class StatsCollector {
   std::uint64_t uncorrectable_reads_ = 0;
   std::uint64_t program_failures_ = 0;
   std::uint64_t program_failure_notices_ = 0;
+  std::uint64_t erase_failures_ = 0;
+  std::uint64_t retired_blocks_ = 0;
+  std::uint64_t retired_stripes_ = 0;
+  std::uint64_t total_physical_capacity_bytes_ = 0;
+  std::uint64_t usable_physical_capacity_bytes_ = 0;
+  std::uint64_t host_visible_capacity_bytes_ = 0;
   std::uint64_t remap_commits_ = 0;
   std::uint64_t aborted_migrations_ = 0;
   std::uint64_t completed_recovery_jobs_ = 0;
@@ -784,6 +821,7 @@ class Simulator {
   PageState page_state(const PhysicalAddr& paddr) const;
   BlockState block_state(const PhysicalAddr& paddr) const;
   SimTime block_ready_at(const PhysicalAddr& paddr) const;
+  std::uint32_t block_erase_count(const PhysicalAddr& paddr) const;
   SimTime die_ready_at(const PhysicalAddr& paddr) const;
   const std::vector<ProgramFailureNotice>& program_failure_notices() const {
     return program_failure_notices_;
@@ -836,6 +874,7 @@ class Simulator {
   void set_transient_page_state(const PhysicalAddr& paddr, PageState state);
   void clear_transient_page_state(const PhysicalAddr& paddr);
   void materialize_initialized_page(const PhysicalAddr& paddr);
+  void retire_block(const PhysicalAddr& paddr);
   bool is_measured(std::uint64_t request_id) const;
   void record_queue_depth();
   std::uint64_t start_copy_job(TransactionSource source,

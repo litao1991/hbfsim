@@ -230,11 +230,16 @@ Config Config::from_yaml_file(const std::string& path) {
   detail::assign_if(values, "nand.features.max_multi_plane_width", config.max_multi_plane_width, integer);
   detail::assign_if(values, "nand.features.cache_program", config.cache_program_enabled, parse_bool);
   detail::assign_if(values, "nand.reliability.program_failure_rate", config.program_failure_rate, parse_probability);
+  detail::assign_if(values, "nand.reliability.program_failure_rate_per_erase", config.program_failure_rate_per_erase, parse_probability);
   detail::assign_if(values, "nand.reliability.program_failure_budget", config.program_failure_budget, integer);
+  detail::assign_if(values, "nand.reliability.erase_failure_rate", config.erase_failure_rate, parse_probability);
+  detail::assign_if(values, "nand.reliability.erase_failure_rate_per_erase", config.erase_failure_rate_per_erase, parse_probability);
   detail::assign_if(values, "nand.reliability.raw_bit_error_rate", config.raw_bit_error_rate, parse_probability);
+  detail::assign_if(values, "nand.reliability.raw_bit_error_rate_per_erase", config.raw_bit_error_rate_per_erase, parse_probability);
   detail::assign_if(values, "nand.reliability.retry_ber_multiplier", config.retry_ber_multiplier, parse_probability);
   detail::assign_if(values, "nand.reliability.ecc_correctable_bits", config.ecc_correctable_bits, integer);
   detail::assign_if(values, "nand.reliability.max_read_retries", config.max_read_retries, integer);
+  detail::assign_if(values, "nand.reliability.max_erase_cycles", config.max_erase_cycles, integer);
   detail::assign_if(values, "nand.reliability.random_seed", config.random_seed, integer);
   detail::assign_if(values, "simulation.max_requests", config.max_requests, integer);
   detail::assign_if(values, "simulation.warmup_requests", config.warmup_requests, integer);
@@ -270,7 +275,14 @@ void Config::validate() const {
   if (multi_plane_enabled && max_multi_plane_width > planes_per_die)
     throw std::runtime_error("multi-plane width exceeds planes per die");
   if (program_failure_rate < 0.0 || program_failure_rate > 1.0 ||
+      program_failure_rate_per_erase < 0.0 ||
+      program_failure_rate_per_erase > 1.0 ||
+      erase_failure_rate < 0.0 || erase_failure_rate > 1.0 ||
+      erase_failure_rate_per_erase < 0.0 ||
+      erase_failure_rate_per_erase > 1.0 ||
       raw_bit_error_rate < 0.0 || raw_bit_error_rate > 1.0 ||
+      raw_bit_error_rate_per_erase < 0.0 ||
+      raw_bit_error_rate_per_erase > 1.0 ||
       retry_ber_multiplier < 0.0 || retry_ber_multiplier > 1.0)
     throw std::runtime_error("reliability probabilities must be in [0,1]");
   if (host_gc_low_watermark < 0.0 || host_gc_low_watermark >= 1.0 ||

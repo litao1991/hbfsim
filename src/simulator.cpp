@@ -53,6 +53,17 @@ Simulator::Simulator(Config config)
   stats_.set_topology(config_.stacks, config_.dies_per_stack,
                       config_.planes_per_die, config_.ports_per_stack,
                       config_.host_channels_per_stack);
+  const auto physical_pages =
+      static_cast<std::uint64_t>(config_.stacks) * config_.dies_per_stack *
+      config_.planes_per_die * config_.blocks_per_plane *
+      config_.pages_per_block;
+  const auto host_visible_pages = mapper_.stripe_mapping()
+      ? static_cast<std::uint64_t>(
+            mapper_.stripe_mapping()->host_visible_stripe_count()) *
+            mapper_.stripe_mapping()->stripe_capacity()
+      : physical_pages;
+  stats_.set_capacity(physical_pages * config_.page_size,
+                      host_visible_pages * config_.page_size);
 
   host_interfaces_.reserve(config_.stacks);
   for (std::uint32_t i = 0; i < config_.stacks; ++i) {
@@ -169,6 +180,32 @@ BlockState Simulator::block_state(const PhysicalAddr& address) const {
 
 SimTime Simulator::block_ready_at(const PhysicalAddr& address) const {
   return plane(address).blocks.at(address.block).ready_at;
+}
+
+std::uint32_t Simulator::block_erase_count(
+    const PhysicalAddr& address) const {
+  return plane(address).blocks.at(address.block).erase_count;
+}
+
+void Simulator::retire_block(const PhysicalAddr& address) {
+  auto& block = plane(address).blocks.at(address.block);
+  const bool newly_bad = !block.bad;
+  if (newly_bad) {
+    block.bad = true;
+    block.state = BlockState::Bad;
+    stats_.record_retired_block();
+  }
+  if (auto* mapping = mapper_.stripe_mapping();
+      mapping && mapping->retire_stripe(address)) {
+    const auto loss = static_cast<std::uint64_t>(mapping->stripe_capacity()) *
+                      config_.page_size;
+    stats_.record_retired_stripe(loss);
+    host_gc_manager_.notify_media_change();
+  } else if (!mapping && newly_bad) {
+    const auto loss = static_cast<std::uint64_t>(config_.pages_per_block) *
+                      config_.page_size;
+    stats_.record_retired_stripe(loss);
+  }
 }
 
 SimTime Simulator::die_ready_at(const PhysicalAddr& address) const {

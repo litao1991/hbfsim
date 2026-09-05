@@ -495,7 +495,8 @@ void Simulator::finish_copy_job(std::uint64_t job_id, SimTime now,
   if (failed && !it->second.erase_only) {
     auto* mapping = mapper_.stripe_mapping();
     const auto state = mapping->descriptor(it->second.destination_stripe).state;
-    if (state != StripeState::Stale && state != StripeState::Free) {
+    if (state != StripeState::Stale && state != StripeState::Free &&
+        state != StripeState::Bad) {
       const auto abandoned = it->second.destination_stripe;
       mapping->abort_migration(it->second.destination_stripe);
       if (it->second.measured) stats_.record_aborted_migration();

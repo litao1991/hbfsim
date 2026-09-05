@@ -258,6 +258,15 @@ void StatsCollector::write(const std::string& output_dir,
           << "\nfailed_requests," << failed_requests_
           << "\nprogram_failures," << program_failures_
           << "\nprogram_failure_notices," << program_failure_notices_
+          << "\nerase_failures," << erase_failures_
+          << "\nretired_blocks," << retired_blocks_
+          << "\nretired_stripes," << retired_stripes_
+          << "\ntotal_physical_capacity_bytes,"
+          << total_physical_capacity_bytes_
+          << "\nusable_physical_capacity_bytes,"
+          << usable_physical_capacity_bytes_
+          << "\nhost_visible_capacity_bytes,"
+          << host_visible_capacity_bytes_
           << "\nremap_commits," << remap_commits_
           << "\naborted_migrations," << aborted_migrations_
           << "\ncompleted_recovery_jobs," << completed_recovery_jobs_

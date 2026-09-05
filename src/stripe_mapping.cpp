@@ -70,6 +70,7 @@ StripeMappingTable::StripeMappingTable(const Config& config)
       config_.blocks_per_plane - 1,
       static_cast<std::size_t>(std::ceil(scaled_reserved)));
   host_visible_stripes_ = config_.blocks_per_plane - reserved;
+  usable_stripes_ = config_.blocks_per_plane;
   descriptors_.resize(config_.blocks_per_plane);
   generations_.resize(config_.blocks_per_plane, 0);
   for (std::uint64_t physical = 0; physical < config_.blocks_per_plane;
@@ -424,7 +425,8 @@ void StripeMappingTable::on_erase(const PhysicalAddr& block_addr) {
   if (block_addr.block >= descriptors_.size())
     throw std::out_of_range("erased block outside stripe geometry");
   auto& target = descriptors_.at(block_addr.block);
-  if (target.state == StripeState::Free) return;
+  if (target.state == StripeState::Free || target.state == StripeState::Bad)
+    return;
   if (block_addr.generation != 0 &&
       block_addr.generation != target.id.generation)
     throw std::runtime_error("STALE_GENERATION_ON_ERASE");
@@ -447,6 +449,30 @@ void StripeMappingTable::on_erase(const PhysicalAddr& block_addr) {
   fresh.id = {physical, target.id.generation};
   descriptors_.at(physical) = std::move(fresh);
   free_stripes_.push_back(physical);
+}
+
+bool StripeMappingTable::retire_stripe(const PhysicalAddr& block_addr) {
+  if (block_addr.block >= descriptors_.size())
+    throw std::out_of_range("retired block outside stripe geometry");
+  auto& target = descriptors_.at(block_addr.block);
+  if (block_addr.generation != 0 && target.id.generation != 0 &&
+      block_addr.generation != target.id.generation)
+    throw std::runtime_error("STALE_GENERATION_ON_RETIRE");
+  if (target.state == StripeState::Bad) return false;
+  if (const auto active = active_.find(target.logical_base_lpn);
+      active != active_.end() && active->second == target.id)
+    active_.erase(active);
+  const auto physical = static_cast<std::uint64_t>(block_addr.block);
+  free_stripes_.erase(
+      std::remove(free_stripes_.begin(), free_stripes_.end(), physical),
+      free_stripes_.end());
+  StripeDescriptor retired;
+  retired.id = {physical, target.id.generation};
+  retired.logical_base_lpn = target.logical_base_lpn;
+  retired.state = StripeState::Bad;
+  target = std::move(retired);
+  if (usable_stripes_ != 0) --usable_stripes_;
+  return true;
 }
 
 bool StripeMappingTable::validate_generation(
