@@ -22,7 +22,14 @@ using SimTime = std::uint64_t;
 
 enum class OpType { Read, Write, Erase, Refresh, Invalidate };
 enum class MappingPolicy { Linear, FineStripe, BurstStripe, HostManaged };
-enum class TransactionSource { User, Mapping, Maintenance, GarbageCollection, Recovery };
+enum class TransactionSource {
+  User,
+  Mapping,
+  Maintenance,
+  Refresh,
+  GarbageCollection,
+  Recovery,
+};
 enum class HostGcVictimPolicy { InvalidRatio, Greedy };
 enum class BlockState { Free, Open, Closed, Erasing, Bad };
 enum class PageState { Erased, Reading, Programming, Valid, Invalid, Failed };
@@ -89,6 +96,10 @@ struct Config {
   double host_gc_overprovisioning_ratio = 0.0;
   HostGcVictimPolicy host_gc_victim_policy =
       HostGcVictimPolicy::InvalidRatio;
+  bool automatic_refresh_enabled = false;
+  SimTime retention_time_ns = 0;
+  SimTime refresh_guard_time_ns = 0;
+  std::uint32_t max_concurrent_refresh_jobs = 1;
   std::uint32_t copy_max_inflight_reads = 32;
   std::uint32_t copy_max_inflight_programs = 8;
   std::uint64_t copy_buffer_size = 2 * 1024 * 1024;
@@ -164,6 +175,7 @@ struct StripeDescriptor {
   std::uint32_t valid_slots = 0;
   std::uint32_t reserved_programs = 0;
   std::uint32_t erased_lanes = 0;
+  SimTime retention_since = 0;
   StripeState state = StripeState::Free;
   LazyBitmap valid_bitmap;
   LazyBitmap invalid_bitmap;
@@ -195,7 +207,8 @@ class StripeMappingTable {
   PhysicalAddr reserve_program(const StripeId& destination,
                                std::uint64_t lpn);
   void reserve_hole(const StripeId& destination, std::uint64_t lpn);
-  void commit_program(std::uint64_t lpn, const PhysicalAddr& paddr);
+  void commit_program(std::uint64_t lpn, const PhysicalAddr& paddr,
+                      SimTime now = 0);
   ProgramFailureNotice fail_program(std::uint64_t lpn,
                                     const PhysicalAddr& paddr);
   void invalidate(std::uint64_t lpn);
@@ -266,6 +279,28 @@ class HostGcManager {
   std::uint64_t media_epoch_ = 0;
   std::optional<std::uint64_t> stalled_epoch_;
   std::optional<std::size_t> stalled_free_stripes_;
+};
+
+struct RefreshDecision {
+  StripeId source;
+  SimTime deadline = 0;
+};
+
+struct RefreshPollResult {
+  std::optional<RefreshDecision> decision;
+  std::optional<SimTime> next_check_at;
+  bool deadline_missed = false;
+  bool deferred_no_space = false;
+};
+
+class RefreshManager {
+ public:
+  explicit RefreshManager(const Config& config) : config_(config) {}
+  RefreshPollResult poll(const StripeMappingTable& mapping, SimTime now,
+                         std::size_t active_refresh_jobs) const;
+
+ private:
+  const Config& config_;
 };
 
 struct HostRoute {
@@ -366,7 +401,8 @@ class AddressMapper {
   PhysicalAddr preview_write(std::uint64_t lpn) const;
   PhysicalAddr map_read(std::uint64_t lpn) const;
   PhysicalAddr prepare_write(std::uint64_t lpn);
-  void commit_write(std::uint64_t lpn, const PhysicalAddr& paddr);
+  void commit_write(std::uint64_t lpn, const PhysicalAddr& paddr,
+                    SimTime now = 0);
   ProgramFailureNotice fail_write(std::uint64_t lpn,
                                   const PhysicalAddr& paddr);
   std::optional<PhysicalAddr> lookup(std::uint64_t lpn) const;
@@ -492,7 +528,7 @@ struct DieState {
 };
 
 struct Plane {
-  static constexpr std::size_t kSourceCount = 5;
+  static constexpr std::size_t kSourceCount = 6;
   using SourceQueues =
       std::array<std::deque<std::uint64_t>, kSourceCount>;
   bool busy = false;
@@ -510,7 +546,8 @@ struct Plane {
   std::vector<BlockMeta> blocks;
 };
 
-enum class EventType { DispatchWake, HostArrival, HostCommandDone, SubreqReady,
+enum class EventType { DispatchWake, RefreshManagerWake,
+                       HostArrival, HostCommandDone, SubreqReady,
                        NandSuspendDone, NandReadDone,
                        NandDataInDone, NandProgramDone, NandEraseDone,
                        NandRefreshDone, NandDataOutDone, SubreqDone };
@@ -596,6 +633,11 @@ class StatsCollector {
     ++automatic_gc_jobs_;
     if (erase_only) ++automatic_gc_erase_only_jobs_;
   }
+  void record_automatic_refresh_job(bool deadline_missed) {
+    ++automatic_refresh_jobs_;
+    if (deadline_missed) ++refresh_deadline_misses_;
+  }
+  void record_refresh_deferred() { ++refresh_deferred_no_space_; }
   void set_topology(std::uint32_t stacks, std::uint32_t dies_per_stack,
                     std::uint32_t planes_per_die,
                     std::uint32_t ports_per_stack,
@@ -636,6 +678,21 @@ class StatsCollector {
     return host_gc_high_watermark_reached_;
   }
   std::uint64_t min_free_stripes() const { return min_free_stripes_; }
+  std::uint64_t automatic_refresh_jobs() const {
+    return automatic_refresh_jobs_;
+  }
+  std::uint64_t completed_refresh_jobs() const {
+    return completed_refresh_jobs_;
+  }
+  std::uint64_t failed_refresh_jobs() const {
+    return failed_refresh_jobs_;
+  }
+  std::uint64_t refresh_deadline_misses() const {
+    return refresh_deadline_misses_;
+  }
+  std::uint64_t refresh_deferred_no_space() const {
+    return refresh_deferred_no_space_;
+  }
   std::uint64_t copy_buffer_high_watermark(
       TransactionSource source) const;
 
@@ -671,6 +728,11 @@ class StatsCollector {
   std::uint64_t host_gc_stalls_ = 0;
   std::uint64_t automatic_gc_jobs_ = 0;
   std::uint64_t automatic_gc_erase_only_jobs_ = 0;
+  std::uint64_t automatic_refresh_jobs_ = 0;
+  std::uint64_t completed_refresh_jobs_ = 0;
+  std::uint64_t failed_refresh_jobs_ = 0;
+  std::uint64_t refresh_deadline_misses_ = 0;
+  std::uint64_t refresh_deferred_no_space_ = 0;
   std::uint64_t min_free_stripes_ = 0;
   std::uint64_t host_visible_stripes_ = 0;
   bool observed_free_stripes_ = false;
@@ -697,6 +759,7 @@ class StatsCollector {
       source_failures_;
   LatencyHistogram recovery_latencies_;
   LatencyHistogram gc_latencies_;
+  LatencyHistogram refresh_latencies_;
   std::map<TransactionSource, std::uint64_t>
       copy_buffer_high_watermarks_;
   std::vector<std::vector<Interval>> stack_array_intervals_;
@@ -726,6 +789,7 @@ class Simulator {
     return program_failure_notices_;
   }
   std::uint64_t start_host_gc(std::uint64_t logical_addr);
+  std::uint64_t start_refresh(std::uint64_t logical_addr);
   void invalidate_host_page(std::uint64_t logical_addr);
   std::size_t active_copy_jobs() const { return copy_jobs_.size(); }
 
@@ -783,6 +847,10 @@ class Simulator {
   std::uint64_t start_gc_erase_only(const StripeId& stripe, bool measured,
                                     SimTime now);
   void maybe_start_host_gc(SimTime now);
+  void maybe_start_automatic_refresh(SimTime now);
+  void schedule_refresh_check(SimTime when);
+  std::size_t active_copy_jobs(TransactionSource source) const;
+  bool has_refresh_horizon(SimTime when) const;
   void advance_copy_job(std::uint64_t job_id, SimTime now);
   void handle_copy_completion(std::uint64_t job_id,
                               std::optional<std::uint32_t> slot,
@@ -844,11 +912,14 @@ class Simulator {
   HostRouter host_router_;
   ReliabilityModel reliability_;
   HostGcManager host_gc_manager_;
+  RefreshManager refresh_manager_;
   SimTime now_ = 0;
   std::uint64_t next_request_id_ = 0;
   std::uint64_t next_subrequest_id_ = 0;
   std::uint64_t submitted_requests_ = 0;
   EventQueue event_queue_;
+  SimTime refresh_check_at_ = std::numeric_limits<SimTime>::max();
+  std::optional<SimTime> next_trace_arrival_;
   std::unordered_map<std::uint64_t, Request> requests_;
   std::unordered_map<std::uint64_t, SubRequest> subrequests_;
   std::vector<Plane> planes_;

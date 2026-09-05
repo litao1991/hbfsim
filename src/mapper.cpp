@@ -84,8 +84,9 @@ PhysicalAddr AddressMapper::prepare_write(std::uint64_t lpn) {
   return base_map(lpn);
 }
 
-void AddressMapper::commit_write(std::uint64_t lpn, const PhysicalAddr& paddr) {
-  if (stripes_) stripes_->commit_program(lpn, paddr);
+void AddressMapper::commit_write(std::uint64_t lpn, const PhysicalAddr& paddr,
+                                 SimTime now) {
+  if (stripes_) stripes_->commit_program(lpn, paddr, now);
 }
 
 ProgramFailureNotice AddressMapper::fail_write(

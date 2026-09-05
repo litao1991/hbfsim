@@ -59,6 +59,26 @@ HostGcVictimPolicy parse_host_gc_policy(const std::string& value) {
   throw std::runtime_error("unknown Host GC victim policy: " + value);
 }
 
+SimTime parse_duration_ns(const std::string& value) {
+  const auto normalized = detail::lower(detail::trim(value));
+  std::size_t used = 0;
+  const long double number = std::stold(normalized, &used);
+  const auto unit = detail::trim(normalized.substr(used));
+  long double multiplier = 1.0L;
+  if (unit.empty() || unit == "ns") multiplier = 1.0L;
+  else if (unit == "us") multiplier = 1'000.0L;
+  else if (unit == "ms") multiplier = 1'000'000.0L;
+  else if (unit == "s") multiplier = 1'000'000'000.0L;
+  else throw std::runtime_error("unknown duration unit: " + value);
+  const auto result = number * multiplier;
+  const auto exclusive_limit = std::ldexp(
+      1.0L, std::numeric_limits<SimTime>::digits);
+  if (!std::isfinite(result) || result < 0.0L ||
+      result >= exclusive_limit)
+    throw std::runtime_error("invalid duration: " + value);
+  return static_cast<SimTime>(std::llround(result));
+}
+
 }  // namespace
 
 std::uint64_t parse_size(const std::string& raw_value) {
@@ -107,6 +127,7 @@ std::string to_string(TransactionSource source) {
     case TransactionSource::User: return "USER";
     case TransactionSource::Mapping: return "MAPPING";
     case TransactionSource::Maintenance: return "MAINTENANCE";
+    case TransactionSource::Refresh: return "REFRESH";
     case TransactionSource::GarbageCollection: return "GC";
     case TransactionSource::Recovery: return "RECOVERY";
   }
@@ -150,7 +171,7 @@ Config Config::from_yaml_file(const std::string& path) {
 
   Config config;
   const auto integer = [](const std::string& v) { return detail::parse_u64(v); };
-  const auto time = [](const std::string& v) { return parse_size(v); };
+  const auto time = [](const std::string& v) { return parse_duration_ns(v); };
   detail::assign_if(values, "device.stacks", config.stacks, integer);
   detail::assign_if(values, "nand.dies_per_stack", config.dies_per_stack, integer);
   detail::assign_if(values, "nand.planes_per_die", config.planes_per_die, integer);
@@ -195,6 +216,10 @@ Config Config::from_yaml_file(const std::string& path) {
   if (const auto it = values.find("host_gc.victim_policy");
       it != values.end())
     config.host_gc_victim_policy = parse_host_gc_policy(it->second);
+  detail::assign_if(values, "refresh.enabled", config.automatic_refresh_enabled, parse_bool);
+  detail::assign_if(values, "refresh.retention_time_ns", config.retention_time_ns, time);
+  detail::assign_if(values, "refresh.guard_time_ns", config.refresh_guard_time_ns, time);
+  detail::assign_if(values, "refresh.max_concurrent_jobs", config.max_concurrent_refresh_jobs, integer);
   detail::assign_if(values, "copy_engine.max_inflight_reads", config.copy_max_inflight_reads, integer);
   detail::assign_if(values, "copy_engine.max_inflight_programs", config.copy_max_inflight_programs, integer);
   detail::assign_if(values, "copy_engine.copy_buffer_size", config.copy_buffer_size, parse_size);
@@ -258,6 +283,14 @@ void Config::validate() const {
   if (host_gc_enabled && mapping_policy != MappingPolicy::HostManaged)
     throw std::runtime_error(
         "automatic Host GC requires mapping.policy: host_managed");
+  if (automatic_refresh_enabled &&
+      (mapping_policy != MappingPolicy::HostManaged ||
+       retention_time_ns == 0 ||
+       refresh_guard_time_ns >= retention_time_ns ||
+       max_concurrent_refresh_jobs == 0))
+    throw std::runtime_error(
+        "automatic Refresh requires host_managed mapping, positive retention "
+        "and concurrency, and guard < retention");
   const auto max_u64 = std::numeric_limits<std::uint64_t>::max();
   if (planes_per_stack > max_u64 / blocks_per_plane ||
       planes_per_stack * blocks_per_plane > max_u64 / pages_per_block)

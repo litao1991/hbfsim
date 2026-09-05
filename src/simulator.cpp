@@ -31,7 +31,8 @@ Simulator::Simulator(Config config)
       mapper_(config_),
       host_router_(config_),
       reliability_(config_),
-      host_gc_manager_(config_) {
+      host_gc_manager_(config_),
+      refresh_manager_(config_) {
   config_.validate();
   const auto planes_per_stack =
       static_cast<std::uint64_t>(config_.dies_per_stack) *
@@ -315,11 +316,13 @@ void Simulator::split_request(Request& request) {
 
 void Simulator::run() {
   maybe_start_host_gc(now_);
+  maybe_start_automatic_refresh(now_);
   while (!event_queue_.empty()) {
     const Event event = event_queue_.pop();
     now_ = event.time;
     handle(event);
     maybe_start_host_gc(now_);
+    maybe_start_automatic_refresh(now_);
   }
   phase_ = SimulationPhase::Drain;
 }
@@ -344,6 +347,7 @@ void Simulator::run(IRequestSource& source) {
     now_ = event.time;
     handle(event);
     maybe_start_host_gc(now_);
+    maybe_start_automatic_refresh(now_);
   }
 
   phase_ = SimulationPhase::Measure;
@@ -353,9 +357,12 @@ void Simulator::run(IRequestSource& source) {
   SimTime measurement_offset = 0;
   if (has_next && entry.timestamp_ns < now_)
     measurement_offset = now_ - entry.timestamp_ns;
+  if (has_next) next_trace_arrival_ = entry.timestamp_ns + measurement_offset;
 
   while (has_next || !event_queue_.empty()) {
-    const SimTime adjusted_time = entry.timestamp_ns + measurement_offset;
+    const SimTime adjusted_time = has_next
+                                      ? entry.timestamp_ns + measurement_offset
+                                      : std::numeric_limits<SimTime>::max();
     if (has_next &&
         (event_queue_.empty() || adjusted_time < event_queue_.next().time)) {
       auto adjusted = entry;
@@ -365,13 +372,19 @@ void Simulator::run(IRequestSource& source) {
           (!config_.max_requests ||
            submitted_requests_ < config_.max_requests) &&
           source.next(entry);
+      next_trace_arrival_ = has_next
+                                ? std::optional<SimTime>(
+                                      entry.timestamp_ns + measurement_offset)
+                                : std::nullopt;
       continue;
     }
     const auto event = event_queue_.pop();
     now_ = event.time;
     handle(event);
     maybe_start_host_gc(now_);
+    maybe_start_automatic_refresh(now_);
   }
+  next_trace_arrival_.reset();
   phase_ = SimulationPhase::Drain;
   streaming_submission_ = false;
 }
@@ -380,11 +393,13 @@ void Simulator::run_until(SimTime until) {
   if (until < now_)
     throw std::invalid_argument("run_until cannot move simulated time backward");
   maybe_start_host_gc(now_);
+  maybe_start_automatic_refresh(now_);
   while (!event_queue_.empty() && event_queue_.next().time <= until) {
     const Event event = event_queue_.pop();
     now_ = event.time;
     handle(event);
     maybe_start_host_gc(now_);
+    maybe_start_automatic_refresh(now_);
   }
   now_ = until;
 }

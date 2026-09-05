@@ -132,6 +132,8 @@ void StatsCollector::record_remap_commit(TransactionSource source,
     recovery_latencies_.record(latency_ns);
   else if (source == TransactionSource::GarbageCollection)
     gc_latencies_.record(latency_ns);
+  else if (source == TransactionSource::Refresh)
+    refresh_latencies_.record(latency_ns);
 }
 
 void StatsCollector::record_copy_job(TransactionSource source, bool failed) {
@@ -145,6 +147,11 @@ void StatsCollector::record_copy_job(TransactionSource source, bool failed) {
       ++failed_gc_jobs_;
     else
       ++completed_gc_jobs_;
+  } else if (source == TransactionSource::Refresh) {
+    if (failed)
+      ++failed_refresh_jobs_;
+    else
+      ++completed_refresh_jobs_;
   }
 }
 
@@ -264,6 +271,12 @@ void StatsCollector::write(const std::string& output_dir,
           << "\nautomatic_host_gc_jobs," << automatic_gc_jobs_
           << "\nautomatic_host_gc_erase_only_jobs,"
           << automatic_gc_erase_only_jobs_
+          << "\nautomatic_refresh_jobs," << automatic_refresh_jobs_
+          << "\ncompleted_refresh_jobs," << completed_refresh_jobs_
+          << "\nfailed_refresh_jobs," << failed_refresh_jobs_
+          << "\nrefresh_deadline_misses," << refresh_deadline_misses_
+          << "\nrefresh_deferred_no_space,"
+          << refresh_deferred_no_space_
           << "\nhost_visible_stripes," << host_visible_stripes_
           << "\nmin_free_stripes," << min_free_stripes_
           << "\nrecovery_read_bytes,"
@@ -274,17 +287,28 @@ void StatsCollector::write(const std::string& output_dir,
           << source_bytes(TransactionSource::GarbageCollection, OpType::Read)
           << "\nhost_gc_program_bytes,"
           << source_bytes(TransactionSource::GarbageCollection, OpType::Write)
+          << "\nrefresh_read_bytes,"
+          << source_bytes(TransactionSource::Refresh, OpType::Read)
+          << "\nrefresh_program_bytes,"
+          << source_bytes(TransactionSource::Refresh, OpType::Write)
           << "\nrecovery_mean_latency_ns," << recovery_latencies_.mean()
           << "\nrecovery_p95_latency_ns,"
           << recovery_latencies_.percentile(0.95)
           << "\nrecovery_p99_latency_ns,"
           << recovery_latencies_.percentile(0.99)
           << "\nhost_gc_mean_latency_ns," << gc_latencies_.mean()
+          << "\nrefresh_mean_latency_ns," << refresh_latencies_.mean()
+          << "\nrefresh_p95_latency_ns,"
+          << refresh_latencies_.percentile(0.95)
+          << "\nrefresh_p99_latency_ns,"
+          << refresh_latencies_.percentile(0.99)
           << "\nrecovery_copy_buffer_high_watermark_bytes,"
           << copy_buffer_high_watermark(TransactionSource::Recovery)
           << "\nhost_gc_copy_buffer_high_watermark_bytes,"
           << copy_buffer_high_watermark(
                  TransactionSource::GarbageCollection)
+          << "\nrefresh_copy_buffer_high_watermark_bytes,"
+          << copy_buffer_high_watermark(TransactionSource::Refresh)
           << "\nstripe_write_amplification,"
           << (source_bytes(TransactionSource::User, OpType::Write) == 0
                   ? 0.0
@@ -293,6 +317,8 @@ void StatsCollector::write(const std::string& output_dir,
                         source_bytes(TransactionSource::Recovery,
                                      OpType::Write) +
                         source_bytes(TransactionSource::GarbageCollection,
+                                     OpType::Write) +
+                        source_bytes(TransactionSource::Refresh,
                                      OpType::Write)) /
                         source_bytes(TransactionSource::User, OpType::Write))
           << "\ncorrected_reads," << corrected_reads_

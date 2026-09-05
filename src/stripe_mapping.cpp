@@ -261,7 +261,8 @@ void StripeMappingTable::reserve_hole(const StripeId& destination,
 }
 
 void StripeMappingTable::commit_program(std::uint64_t lpn,
-                                        const PhysicalAddr& paddr) {
+                                        const PhysicalAddr& paddr,
+                                        SimTime now) {
   const StripeId stripe{paddr.physical_stripe, paddr.generation};
   auto& target = mutable_descriptor(stripe);
   const auto slot = slot_of(paddr);
@@ -274,6 +275,7 @@ void StripeMappingTable::commit_program(std::uint64_t lpn,
   target.valid_bitmap.set(slot, stripe_capacity_);
   target.invalid_bitmap.clear(slot);
   target.failed_bitmap.clear(slot);
+  if (target.valid_slots == 0) target.retention_since = now;
   ++target.valid_slots;
   if (target.next_program_slot == stripe_capacity_ &&
       target.reserved_programs == 0)

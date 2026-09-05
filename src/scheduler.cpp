@@ -33,7 +33,9 @@ int base_priority(const SubRequest& subrequest) {
   if (subrequest.source == TransactionSource::User ||
       subrequest.source == TransactionSource::Mapping)
     return 3;
-  if (subrequest.source == TransactionSource::Maintenance) return 4;
+  if (subrequest.source == TransactionSource::Maintenance ||
+      subrequest.source == TransactionSource::Refresh)
+    return 4;
   return 5;
 }
 

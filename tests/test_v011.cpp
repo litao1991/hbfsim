@@ -69,6 +69,11 @@ int main() {
                    "  high_watermark: 25%\n"
                    "  overprovisioning_ratio: 20%\n"
                    "  victim_policy: greedy\n"
+                   "refresh:\n"
+                   "  enabled: true\n"
+                   "  retention_time_ns: 2ms\n"
+                   "  guard_time_ns: 100us\n"
+                   "  max_concurrent_jobs: 2\n"
                    "copy_engine:\n"
                    "  max_inflight_reads: 7\n"
                    "  max_inflight_programs: 3\n"
@@ -97,6 +102,10 @@ int main() {
     CHECK(parsed.host_gc_overprovisioning_ratio == 0.20);
     CHECK(parsed.host_gc_victim_policy ==
           hbfsim::HostGcVictimPolicy::Greedy);
+    CHECK(parsed.automatic_refresh_enabled);
+    CHECK(parsed.retention_time_ns == 2'000'000);
+    CHECK(parsed.refresh_guard_time_ns == 100'000);
+    CHECK(parsed.max_concurrent_refresh_jobs == 2);
     CHECK(parsed.copy_max_inflight_reads == 7);
     CHECK(parsed.copy_max_inflight_programs == 3);
     CHECK(parsed.copy_buffer_size == 8 * 1024);

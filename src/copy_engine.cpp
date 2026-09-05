@@ -9,7 +9,8 @@ namespace {
 
 bool copy_source(TransactionSource source) {
   return source == TransactionSource::Recovery ||
-         source == TransactionSource::GarbageCollection;
+         source == TransactionSource::GarbageCollection ||
+         source == TransactionSource::Refresh;
 }
 
 }  // namespace
@@ -63,7 +64,8 @@ std::uint64_t Simulator::start_copy_job(
     TransactionSource source, const StripeId& stripe,
     std::optional<std::uint32_t> replay_slot, bool measured, SimTime now) {
   if (!copy_source(source))
-    throw std::invalid_argument("copy job requires recovery or GC source");
+    throw std::invalid_argument(
+        "copy job requires recovery, GC, or refresh source");
   auto* mapping = mapper_.stripe_mapping();
   if (!mapping)
     throw std::runtime_error("COPY_REQUIRES_HOST_MANAGED_MAPPING");

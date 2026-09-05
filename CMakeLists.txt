@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(hbfsim VERSION 0.2.3 LANGUAGES CXX)
+project(hbfsim VERSION 0.2.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,6 +11,7 @@ add_library(hbfsim_core
   src/event_queue.cpp
   src/stripe_mapping.cpp
   src/host_gc.cpp
+  src/refresh_manager.cpp
   src/copy_engine.cpp
   src/mapper.cpp
   src/link.cpp
@@ -28,7 +29,7 @@ target_link_libraries(hbfsim PRIVATE hbfsim_core)
 
 include(CTest)
 if(BUILD_TESTING)
-  foreach(test_name mapper stripe_mapping copy_engine host_gc scheduler timing erase resources channels warmup advanced v011)
+  foreach(test_name mapper stripe_mapping copy_engine host_gc refresh_manager scheduler timing erase resources channels warmup advanced v011)
     add_executable(test_${test_name} tests/test_${test_name}.cpp)
     target_link_libraries(test_${test_name} PRIVATE hbfsim_core)
     add_test(NAME ${test_name} COMMAND test_${test_name})

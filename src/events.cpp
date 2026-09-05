@@ -48,7 +48,7 @@ void Simulator::finish_program(SubRequest& sub, SimTime now) {
   block.last_program_time = now;
   if (block.next_program_page == config_.pages_per_block)
     block.state = BlockState::Closed;
-  mapper_.commit_write(sub.lpn, sub.paddr);
+  mapper_.commit_write(sub.lpn, sub.paddr, now);
 }
 
 void Simulator::complete_subrequest(std::uint64_t id, SimTime now) {
@@ -89,10 +89,16 @@ void Simulator::handle(const Event& event) {
     dispatch_stack(stack, now_);
     return;
   }
+  if (event.type == EventType::RefreshManagerWake) {
+    if (refresh_check_at_ == now_)
+      refresh_check_at_ = std::numeric_limits<SimTime>::max();
+    return;
+  }
 
   auto& request = requests_.at(event.request_id);
   switch (event.type) {
     case EventType::DispatchWake:
+    case EventType::RefreshManagerWake:
       break;
     case EventType::HostArrival: {
       const auto first =

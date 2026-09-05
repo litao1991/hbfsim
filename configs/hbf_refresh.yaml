@@ -1,0 +1,48 @@
+device:
+  stacks: 1
+
+host_interface:
+  channels_per_stack: 2
+  bandwidth_per_channel: 100GBps
+  fixed_latency_ns: 10
+
+nand:
+  dies_per_stack: 1
+  planes_per_die: 2
+  blocks_per_plane: 8
+  pages_per_block: 4
+  page_size: 4KiB
+  timing:
+    read_ns: 1us
+    program_ns: 5us
+    erase_ns: 10us
+  parallelism:
+    max_active_planes_per_die: 2
+    max_active_planes_per_stack: 2
+
+internal_fabric:
+  ports_per_stack: 2
+  aggregate_bandwidth: 100GBps
+  port_bandwidth: 64GBps
+  fixed_latency_ns: 10
+
+mapping:
+  policy: host_managed
+
+host_gc:
+  overprovisioning_ratio: 25%
+
+refresh:
+  enabled: true
+  retention_time_ns: 1ms
+  guard_time_ns: 100us
+  max_concurrent_jobs: 1
+
+copy_engine:
+  max_inflight_reads: 8
+  max_inflight_programs: 4
+  copy_buffer_size: 64KiB
+  prefetch_window_pages: 8
+
+statistics:
+  output_dir: results/refresh

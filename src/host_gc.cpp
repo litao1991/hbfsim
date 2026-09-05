@@ -114,7 +114,10 @@ void Simulator::maybe_start_host_gc(SimTime now) {
   auto* mapping = mapper_.stripe_mapping();
   if (!mapping) return;
   const auto result = host_gc_manager_.poll(
-      *mapping, !copy_jobs_.empty() || !pending_recoveries_.empty());
+      *mapping,
+      active_copy_jobs(TransactionSource::GarbageCollection) != 0 ||
+          active_copy_jobs(TransactionSource::Recovery) != 0 ||
+          !pending_recoveries_.empty());
   const bool measured = phase_ != SimulationPhase::Warmup;
   if (measured) {
     stats_.observe_free_stripes(result.free_stripes,
