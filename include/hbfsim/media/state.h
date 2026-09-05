@@ -15,6 +15,7 @@ namespace hbfsim {
 struct BlockMeta {
   BlockState state = BlockState::Free;
   std::uint32_t erase_count = 0;
+  std::uint64_t read_count = 0;
   std::uint32_t next_program_page = 0;
   std::uint32_t valid_pages = 0;
   std::uint32_t invalid_pages = 0;

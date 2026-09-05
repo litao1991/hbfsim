@@ -105,6 +105,27 @@ void Simulator::maybe_start_automatic_refresh(SimTime now) {
       stats_.record_automatic_refresh_job(result.deadline_missed);
     start_copy_job(TransactionSource::Refresh, result.decision->source,
                    std::nullopt, measured, now);
+  } else if (config_.refresh_read_count_threshold != 0 &&
+             active_copy_jobs(TransactionSource::Refresh) <
+                 config_.max_concurrent_refresh_jobs &&
+             mapping->free_stripe_count() != 0) {
+    for (const auto& stripe : mapping->active_stripes()) {
+      const auto& descriptor = mapping->descriptor(stripe);
+      if (descriptor.state != StripeState::Sealed) continue;
+      bool disturbed = false;
+      for (std::uint32_t lane = 0; lane < mapping->stripe_width(); ++lane) {
+        if (system_.media().block_read_count(mapping->address_for(stripe, lane)) >=
+            config_.refresh_read_count_threshold) {
+          disturbed = true;
+          break;
+        }
+      }
+      if (!disturbed) continue;
+      if (measured) stats_.record_automatic_refresh_job(false);
+      start_copy_job(TransactionSource::Refresh, stripe, std::nullopt,
+                     measured, now);
+      break;
+    }
   }
   if (result.next_check_at) schedule_refresh_check(*result.next_check_at);
 }

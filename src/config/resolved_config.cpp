@@ -151,6 +151,9 @@ void Config::write_resolved_yaml(const std::string& path) const {
       << "\n    raw_bit_error_rate: " << raw_bit_error_rate
       << "\n    raw_bit_error_rate_per_erase: "
       << raw_bit_error_rate_per_erase
+      << "\n    raw_bit_error_rate_per_read: " << raw_bit_error_rate_per_read
+      << "\n    raw_bit_error_rate_per_retention_ns: "
+      << raw_bit_error_rate_per_retention_ns
       << "\n    retry_ber_multiplier: " << retry_ber_multiplier
       << "\n    ecc_correctable_bits: " << ecc_correctable_bits
       << "\n    max_read_retries: " << max_read_retries
@@ -185,6 +188,7 @@ void Config::write_resolved_yaml(const std::string& path) const {
       << "\n  retention_time_ns: " << retention_time_ns
       << "\n  guard_time_ns: " << refresh_guard_time_ns
       << "\n  max_concurrent_jobs: " << max_concurrent_refresh_jobs
+      << "\n  read_count_threshold: " << refresh_read_count_threshold
       << "\ncopy_engine:\n  max_inflight_reads: "
       << copy_max_inflight_reads
       << "\n  max_inflight_programs: " << copy_max_inflight_programs

@@ -169,7 +169,9 @@ void Simulator::handle(const Event& event) {
       auto& target = controller_plane(sub.paddr);
       const auto& block = media_plane(sub.paddr).blocks.at(sub.paddr.block);
       const auto result = system_.reliability().read_result(
-          sub.bytes, sub.read_attempts, block.erase_count);
+          sub.bytes, sub.read_attempts, block.erase_count, block.read_count,
+          system_.media().block_retention_age(sub.paddr, now_));
+      system_.media().record_read(sub.paddr);
       const bool host_driven_retry =
           config_.host_driven_read_retry &&
           config_.simulation_profile != SimulationProfile::MediaResearch;

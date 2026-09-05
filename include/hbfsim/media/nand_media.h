@@ -28,6 +28,8 @@ class NandMediaSystem {
   BlockState block_state(const PhysicalAddr& address) const;
   SimTime block_ready_at(const PhysicalAddr& address) const;
   std::uint32_t block_erase_count(const PhysicalAddr& address) const;
+  std::uint64_t block_read_count(const PhysicalAddr& address) const;
+  SimTime block_retention_age(const PhysicalAddr& address, SimTime now) const;
   SimTime die_ready_at(const PhysicalAddr& address) const;
 
   bool read_cache_lookup(const PhysicalAddr& address, SimTime now);
@@ -37,6 +39,7 @@ class NandMediaSystem {
 
   void mark_erased(const PhysicalAddr& address);
   void begin_read(const PhysicalAddr& address);
+  void record_read(const PhysicalAddr& address);
   void begin_program(const PhysicalAddr& address);
   void begin_erase(const PhysicalAddr& address);
   void reserve_program_hole(const PhysicalAddr& address);

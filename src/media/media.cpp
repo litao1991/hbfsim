@@ -193,6 +193,18 @@ std::uint32_t NandMediaSystem::block_erase_count(
   return plane(address).blocks.at(address.block).erase_count;
 }
 
+std::uint64_t NandMediaSystem::block_read_count(
+    const PhysicalAddr& address) const {
+  return plane(address).blocks.at(address.block).read_count;
+}
+
+SimTime NandMediaSystem::block_retention_age(
+    const PhysicalAddr& address, SimTime now) const {
+  const auto& block = plane(address).blocks.at(address.block);
+  const auto since = std::max(block.last_program_time, block.last_refresh_time);
+  return now > since ? now - since : 0;
+}
+
 SimTime NandMediaSystem::die_ready_at(const PhysicalAddr& address) const {
   const auto& state = die(address);
   return std::max(state.ready_at, state.command_ready_at);
@@ -227,6 +239,10 @@ void NandMediaSystem::mark_erased(const PhysicalAddr& address) {
 
 void NandMediaSystem::begin_read(const PhysicalAddr& address) {
   set_transient_page_state(address, PageState::Reading);
+}
+
+void NandMediaSystem::record_read(const PhysicalAddr& address) {
+  ++plane(address).blocks.at(address.block).read_count;
 }
 
 void NandMediaSystem::begin_program(const PhysicalAddr& address) {

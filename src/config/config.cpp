@@ -350,6 +350,9 @@ Config Config::from_yaml_file(const std::string& path) {
   detail::assign_if(values, "nand.reliability.erase_failure_rate_per_erase", config.erase_failure_rate_per_erase, parse_probability);
   detail::assign_if(values, "nand.reliability.raw_bit_error_rate", config.raw_bit_error_rate, parse_probability);
   detail::assign_if(values, "nand.reliability.raw_bit_error_rate_per_erase", config.raw_bit_error_rate_per_erase, parse_probability);
+  detail::assign_if(values, "nand.reliability.raw_bit_error_rate_per_read", config.raw_bit_error_rate_per_read, parse_probability);
+  detail::assign_if(values, "nand.reliability.raw_bit_error_rate_per_retention_ns", config.raw_bit_error_rate_per_retention_ns, parse_probability);
+  detail::assign_if(values, "refresh.read_count_threshold", config.refresh_read_count_threshold, integer);
   detail::assign_if(values, "nand.reliability.retry_ber_multiplier", config.retry_ber_multiplier, parse_probability);
   detail::assign_if(values, "nand.reliability.ecc_correctable_bits", config.ecc_correctable_bits, integer);
   detail::assign_if(values, "nand.reliability.max_read_retries", config.max_read_retries, integer);

@@ -94,6 +94,9 @@ struct Config {
   double erase_failure_rate_per_erase = 0.0;
   double raw_bit_error_rate = 0.0;
   double raw_bit_error_rate_per_erase = 0.0;
+  double raw_bit_error_rate_per_read = 0.0;
+  double raw_bit_error_rate_per_retention_ns = 0.0;
+  std::uint64_t refresh_read_count_threshold = 0;
   double retry_ber_multiplier = 0.25;
   std::uint32_t ecc_correctable_bits = 0;
   std::uint32_t max_read_retries = 0;

@@ -43,11 +43,16 @@ bool ReliabilityModel::erase_failed(std::uint32_t erase_count) {
 
 ReadErrorResult ReliabilityModel::read_result(std::uint64_t bytes,
                                                std::uint32_t retry,
-                                               std::uint32_t erase_count) {
+                                               std::uint32_t erase_count,
+                                               std::uint64_t read_count,
+                                               SimTime retention_age_ns) {
   const double retry_scale = std::pow(config_.retry_ber_multiplier, retry);
-  const auto rber = wear_probability(
-      config_.raw_bit_error_rate, config_.raw_bit_error_rate_per_erase,
-      erase_count);
+  const auto rber = std::clamp(
+      config_.raw_bit_error_rate +
+          config_.raw_bit_error_rate_per_erase * erase_count +
+          config_.raw_bit_error_rate_per_read * read_count +
+          config_.raw_bit_error_rate_per_retention_ns * retention_age_ns,
+      0.0, 1.0);
   const double mean_errors = static_cast<double>(bytes) * 8.0 *
                              rber * retry_scale;
   if (mean_errors <= 0.0) return {};

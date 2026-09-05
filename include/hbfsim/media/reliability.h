@@ -18,7 +18,9 @@ class ReliabilityModel {
   bool program_failed(std::uint32_t erase_count = 0);
   bool erase_failed(std::uint32_t erase_count = 0);
   ReadErrorResult read_result(std::uint64_t bytes, std::uint32_t retry,
-                              std::uint32_t erase_count = 0);
+                              std::uint32_t erase_count = 0,
+                              std::uint64_t read_count = 0,
+                              SimTime retention_age_ns = 0);
 
  private:
   const Config& config_;
