@@ -49,6 +49,9 @@ int main() {
   CHECK(!spec.research_stripe_mapping_enabled);
   CHECK(!spec.research_copy_gc_enabled);
   CHECK(!spec.research_migration_recovery_enabled);
+  CHECK(spec.channel_media_policy == ChannelMediaPolicy::FineStripe);
+  CHECK(spec.read_cache_enabled);
+  CHECK(spec.mapping_policy == MappingPolicy::Linear);
 
   const auto enabled_path = write_config(
       "extension",
@@ -81,6 +84,8 @@ int main() {
   CHECK(resolved.find("profile: hbf_v0_7") != std::string::npos);
   CHECK(resolved.find("abstraction: transaction") != std::string::npos);
   CHECK(resolved.find("stripe_mapping: false") != std::string::npos);
+  CHECK(resolved.find("policy: fine_stripe") != std::string::npos);
+  CHECK(resolved.find("entries_per_bank: 2") != std::string::npos);
 
   std::filesystem::remove(spec_path);
   std::filesystem::remove(enabled_path);

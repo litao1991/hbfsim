@@ -41,6 +41,51 @@ std::string to_string(ProtocolAbstraction abstraction) {
   return "unknown";
 }
 
+std::string to_string(ChannelMediaPolicy policy) {
+  switch (policy) {
+    case ChannelMediaPolicy::Linear: return "linear";
+    case ChannelMediaPolicy::FineStripe: return "fine_stripe";
+  }
+  return "unknown";
+}
+
+std::string to_string(HbfCompletionClass completion) {
+  switch (completion) {
+    case HbfCompletionClass::Success: return "SUCCESS";
+    case HbfCompletionClass::SuccessWithAdvisory:
+      return "SUCCESS_WITH_ADVISORY";
+    case HbfCompletionClass::RetryRequired: return "RETRY_REQUIRED";
+    case HbfCompletionClass::Failed: return "FAILED";
+  }
+  return "UNKNOWN";
+}
+
+HbfCompletionClass hbf_completion_class(HbfStatus status) {
+  switch (status) {
+    case HbfStatus::Success:
+      return HbfCompletionClass::Success;
+    case HbfStatus::CorrectedEccRefreshRequired:
+      return HbfCompletionClass::SuccessWithAdvisory;
+    case HbfStatus::ProgramFailureReplayRequired:
+    case HbfStatus::UncorrectableEccRefreshRequired:
+    case HbfStatus::UncorrectableEccRetryRequired:
+    case HbfStatus::TemporarilyRestricted:
+    case HbfStatus::DieTemporarilyBlocked:
+    case HbfStatus::ReadPendingWrite:
+    case HbfStatus::MaxPendingDluReached:
+    case HbfStatus::DluAccumulationTimeout:
+      return HbfCompletionClass::RetryRequired;
+    default:
+      return HbfCompletionClass::Failed;
+  }
+}
+
+bool hbf_data_valid(HbfStatus status) {
+  const auto completion = hbf_completion_class(status);
+  return completion == HbfCompletionClass::Success ||
+         completion == HbfCompletionClass::SuccessWithAdvisory;
+}
+
 std::string to_string(HbfStatus status) {
   switch (status) {
     case HbfStatus::Success: return "SUCCESS";
@@ -112,7 +157,8 @@ std::uint8_t hbf_status_code(OpType op, HbfStatus status) {
 HbfResponse HbfResponse::success(std::uint64_t request_id,
                                  SimTime completion_time,
                                  std::uint64_t bytes_completed) {
-  return HbfResponse{request_id, HbfStatus::Success, std::nullopt,
+  return HbfResponse{request_id, HbfStatus::Success,
+                     HbfCompletionClass::Success, std::nullopt,
                      completion_time, bytes_completed, std::nullopt};
 }
 
@@ -124,16 +170,19 @@ HbfResponse HbfResponse::failure(std::uint64_t request_id,
   if (status == HbfStatus::Success)
     throw std::invalid_argument(
         "HbfResponse::failure requires a non-success status");
-  return HbfResponse{request_id, status, std::nullopt, completion_time,
-                     bytes_completed, std::move(error)};
+  return HbfResponse{request_id, status, hbf_completion_class(status),
+                     std::nullopt, completion_time, bytes_completed,
+                     std::move(error)};
 }
 
 HbfSystem::HbfSystem(const Config& config)
     : profile_(config.simulation_profile),
       protocol_abstraction_(config.protocol_abstraction),
       capabilities_(capabilities_for(config)),
-      mapper_(config),
-      host_router_(config),
+      channels_(config),
+      mapper_(config, channels_),
+      host_router_(config, channels_),
+      protocol_validator_(config, channels_),
       axi_(config),
       dlu_assembler_(config),
       reliability_(config),

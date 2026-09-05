@@ -50,6 +50,13 @@ enum class HostLinkDirection { Command, HostToDevice, DeviceToHost };
 enum class SimulationPhase { Initialize, Warmup, Measure, Drain };
 enum class SimulationProfile { MediaResearch, HbfV07, AiSystem };
 enum class ProtocolAbstraction { Transaction, Flit };
+enum class ChannelMediaPolicy { Linear, FineStripe };
+enum class HbfCompletionClass {
+  Success,
+  SuccessWithAdvisory,
+  RetryRequired,
+  Failed,
+};
 enum class HbfStatus {
   Success,
   InvalidAddress,
@@ -78,7 +85,11 @@ std::string to_string(OpType op);
 std::string to_string(TransactionSource source);
 std::string to_string(SimulationProfile profile);
 std::string to_string(ProtocolAbstraction abstraction);
+std::string to_string(ChannelMediaPolicy policy);
+std::string to_string(HbfCompletionClass completion);
 std::string to_string(HbfStatus status);
+HbfCompletionClass hbf_completion_class(HbfStatus status);
+bool hbf_data_valid(HbfStatus status);
 std::uint8_t hbf_status_code(OpType op, HbfStatus status);
 OpType parse_op(const std::string& value);
 std::uint64_t parse_size(const std::string& value);
@@ -101,6 +112,10 @@ struct Config {
   std::uint32_t max_pending_dlus = 64;
   SimTime dlu_accumulation_timeout_ns = 1'000'000;
   bool page0_auto_erase = true;
+  ChannelMediaPolicy channel_media_policy = ChannelMediaPolicy::Linear;
+  std::uint32_t banks_per_die = 1;
+  bool read_cache_enabled = false;
+  std::uint32_t read_cache_entries_per_bank = 2;
   std::uint32_t stacks = 1;
   std::uint32_t dies_per_stack = 16;
   std::uint32_t planes_per_die = 32;
@@ -174,6 +189,8 @@ struct Config {
   SimTime queue_depth_sample_interval_ns = 1'000;
   std::string output_dir = "results";
 
+  static Config for_profile(SimulationProfile profile);
+  void apply_profile_defaults(SimulationProfile profile);
   static Config from_yaml_file(const std::string& path);
   void validate() const;
   void write_resolved_yaml(const std::string& path) const;
@@ -191,6 +208,7 @@ struct PhysicalAddr {
       std::numeric_limits<std::uint64_t>::max();
   std::uint32_t generation = 0;
   std::uint32_t channel = 0;
+  std::uint32_t bank = 0;
 };
 
 struct HbfErrorInfo {
@@ -204,12 +222,17 @@ struct HbfErrorInfo {
 struct HbfResponse {
   std::uint64_t request_id = 0;
   HbfStatus status = HbfStatus::Success;
+  HbfCompletionClass completion_class = HbfCompletionClass::Success;
   std::optional<std::uint8_t> protocol_status_code;
   SimTime completion_time = 0;
   std::uint64_t bytes_completed = 0;
   std::optional<HbfErrorInfo> error;
 
-  [[nodiscard]] bool ok() const { return status == HbfStatus::Success; }
+  [[nodiscard]] bool ok() const {
+    return completion_class == HbfCompletionClass::Success ||
+           completion_class == HbfCompletionClass::SuccessWithAdvisory;
+  }
+  [[nodiscard]] bool data_valid() const { return hbf_data_valid(status); }
   static HbfResponse success(std::uint64_t request_id,
                              SimTime completion_time = 0,
                              std::uint64_t bytes_completed = 0);
@@ -286,9 +309,21 @@ class AxiOrderTracker {
 };
 
 struct HbfDlu {
+  struct Timing {
+    SimTime first_fragment_arrival = 0;
+    SimTime last_fragment_arrival = 0;
+    SimTime total_h2d_wait_ns = 0;
+    SimTime total_h2d_service_ns = 0;
+    std::uint32_t fragment_count = 0;
+
+    SimTime assembly_latency_ns() const {
+      return last_fragment_arrival - first_fragment_arrival;
+    }
+  };
   HbfChannelAddress address;
   std::uint64_t size = 0;
   std::vector<std::uint64_t> request_ids;
+  Timing timing;
 };
 
 struct DluAssemblyResult {
@@ -301,6 +336,7 @@ struct ExpiredDlu {
   HbfChannelAddress address;
   std::vector<std::uint64_t> request_ids;
   HbfStatus status = HbfStatus::DluAccumulationTimeout;
+  HbfDlu::Timing timing;
 };
 
 enum class DluReadDisposition { NotPending, Forwarded, PendingWrite };
@@ -317,7 +353,9 @@ class DluAssembler {
   DluAssemblyResult submit(std::uint64_t request_id,
                            const HbfChannelAddress& address,
                            std::uint64_t bytes, SimTime now,
-                           std::optional<SimTime> data_ready_at = std::nullopt);
+                           std::optional<SimTime> data_ready_at = std::nullopt,
+                           SimTime h2d_wait_ns = 0,
+                           SimTime h2d_service_ns = 0);
   std::vector<ExpiredDlu> expire(SimTime now);
   DluReadResult lookup(const HbfChannelAddress& address,
                        std::uint64_t bytes) const;
@@ -334,17 +372,38 @@ class DluAssembler {
     std::size_t operator()(const DluKey& key) const;
   };
   struct PendingDlu {
+    std::uint64_t generation = 0;
     SimTime deadline = 0;
     std::uint64_t covered_bytes = 0;
     std::vector<std::uint64_t> coverage;
     std::vector<SimTime> fragment_ready_at;
     std::vector<std::uint64_t> request_ids;
+    HbfDlu::Timing timing;
+  };
+  struct DeadlineEntry {
+    SimTime deadline = 0;
+    DluKey key;
+    std::uint64_t generation = 0;
+  };
+  struct DeadlineCompare {
+    bool operator()(const DeadlineEntry& left,
+                    const DeadlineEntry& right) const {
+      if (left.deadline != right.deadline)
+        return left.deadline > right.deadline;
+      if (left.key.channel != right.key.channel)
+        return left.key.channel > right.key.channel;
+      return left.key.local_base > right.key.local_base;
+    }
   };
   std::uint64_t dlu_size_ = 0;
   std::uint32_t max_pending_dlus_ = 0;
   SimTime timeout_ns_ = 0;
   std::unordered_map<DluKey, PendingDlu, DluKeyHash> pending_;
   std::unordered_map<std::uint32_t, std::size_t> pending_per_channel_;
+  std::priority_queue<DeadlineEntry, std::vector<DeadlineEntry>,
+                      DeadlineCompare>
+      deadlines_;
+  std::uint64_t next_generation_ = 1;
 };
 
 struct StripeId {
@@ -564,6 +623,7 @@ struct LatencyBreakdown {
   SimTime nand_queue_wait_ns = 0;
   SimTime nand_command_wait_ns = 0;
   SimTime array_service_ns = 0;
+  SimTime auto_erase_service_ns = 0;
   SimTime fabric_wait_ns = 0;
   SimTime fabric_service_ns = 0;
 };
@@ -611,6 +671,26 @@ struct TraceEntry {
   std::uint32_t axi_port = std::numeric_limits<std::uint32_t>::max();
 };
 
+struct HbfValidationResult {
+  HbfStatus status = HbfStatus::Success;
+  std::string reason;
+  std::optional<HbfChannelAddress> address;
+
+  [[nodiscard]] bool ok() const { return status == HbfStatus::Success; }
+};
+
+class HbfProtocolValidator {
+ public:
+  HbfProtocolValidator(const Config& config,
+                       const HbfChannelDomain& channels)
+      : config_(config), channels_(channels) {}
+  HbfValidationResult validate(const TraceEntry& entry) const;
+
+ private:
+  const Config& config_;
+  const HbfChannelDomain& channels_;
+};
+
 class IRequestSource {
  public:
   virtual ~IRequestSource() = default;
@@ -633,6 +713,7 @@ class CsvTraceSource final : public IRequestSource {
 class AddressMapper {
  public:
   explicit AddressMapper(const Config& config);
+  AddressMapper(const Config& config, const HbfChannelDomain& channels);
   PhysicalAddr placement(std::uint64_t lpn) const;
   PhysicalAddr preview_write(std::uint64_t lpn) const;
   PhysicalAddr map_read(std::uint64_t lpn) const;
@@ -649,12 +730,14 @@ class AddressMapper {
   StripeMappingTable* stripe_mapping() { return stripes_.get(); }
   const StripeMappingTable* stripe_mapping() const { return stripes_.get(); }
   bool validate_generation(const PhysicalAddr& paddr) const;
+  const HbfChannelDomain& channels() const { return *channels_; }
 
  private:
   PhysicalAddr base_map(std::uint64_t lpn) const;
   PhysicalAddr base_map_channel(const HbfChannelAddress& address) const;
   const Config& config_;
-  HbfChannelDomain channels_;
+  std::unique_ptr<HbfChannelDomain> owned_channels_;
+  const HbfChannelDomain* channels_ = nullptr;
   std::unique_ptr<StripeMappingTable> stripes_;
 };
 
@@ -702,18 +785,19 @@ class DataFabric {
 
 class HostRouter {
  public:
-  explicit HostRouter(const Config& config)
-      : config_(config), channels_(config) {}
+  explicit HostRouter(const Config& config);
+  HostRouter(const Config& config, const HbfChannelDomain& channels);
   HostRoute route(std::uint64_t logical_addr,
                   const PhysicalAddr& media_address) const;
   HbfChannelAddress channel_address(std::uint64_t logical_addr) const {
-    return channels_.translate(logical_addr);
+    return channels_->translate(logical_addr);
   }
-  const HbfChannelDomain& channels() const { return channels_; }
+  const HbfChannelDomain& channels() const { return *channels_; }
 
  private:
   const Config& config_;
-  HbfChannelDomain channels_;
+  std::unique_ptr<HbfChannelDomain> owned_channels_;
+  const HbfChannelDomain* channels_ = nullptr;
 };
 
 class HostInterface {
@@ -779,7 +863,10 @@ class HbfSystem {
   const AddressMapper& mapper() const { return mapper_; }
   HostRouter& host_router() { return host_router_; }
   const HostRouter& host_router() const { return host_router_; }
-  const HbfChannelDomain& channels() const { return host_router_.channels(); }
+  const HbfChannelDomain& channels() const { return channels_; }
+  const HbfProtocolValidator& protocol_validator() const {
+    return protocol_validator_;
+  }
   AxiOrderTracker& axi() { return axi_; }
   const AxiOrderTracker& axi() const { return axi_; }
   DluAssembler& dlu_assembler() { return dlu_assembler_; }
@@ -796,8 +883,10 @@ class HbfSystem {
   ProtocolAbstraction protocol_abstraction_ =
       ProtocolAbstraction::Transaction;
   HbfSystemCapabilities capabilities_;
+  HbfChannelDomain channels_;
   AddressMapper mapper_;
   HostRouter host_router_;
+  HbfProtocolValidator protocol_validator_;
   AxiOrderTracker axi_;
   DluAssembler dlu_assembler_;
   ReliabilityModel reliability_;
@@ -825,6 +914,18 @@ struct DieState {
   SimTime command_ready_at = 0;
 };
 
+struct ReadCacheEntry {
+  bool valid = false;
+  PhysicalAddr page;
+  SimTime ready_at = 0;
+  std::uint64_t last_use = 0;
+};
+
+struct BankState {
+  SimTime command_ready_at = 0;
+  std::vector<ReadCacheEntry> read_cache;
+};
+
 struct Plane {
   static constexpr std::size_t kSourceCount = 6;
   using SourceQueues =
@@ -849,8 +950,11 @@ enum class EventType { DispatchWake, RefreshManagerWake, DluTimeout,
                        ResourceHostStart, ResourceHostEnd,
                        HostArrival, HostCommandDone, SubreqReady,
                        NandSuspendDone, NandReadDone,
-                       NandDataInDone, NandProgramDone, NandEraseDone,
-                       NandRefreshDone, NandDataOutDone, SubreqDone };
+                       NandDataInDone, NandAutoEraseDone,
+                       NandAutoEraseProgramReady, NandProgramDone,
+                       NandEraseDone,
+                       NandRefreshDone, NandDataOutDone,
+                       ReadCacheDataOutDone, SubreqDone };
 struct Event {
   SimTime time;
   std::uint64_t seq;
@@ -972,6 +1076,7 @@ class StatsCollector {
     ++program_failure_notices_;
   }
   void record_erase_failure() { ++erase_failures_; }
+  void record_page0_auto_erase() { ++page0_auto_erases_; }
   void record_retired_block() { ++retired_blocks_; }
   void record_capacity_loss(std::uint64_t capacity_loss_bytes) {
     usable_physical_capacity_bytes_ =
@@ -1016,6 +1121,20 @@ class StatsCollector {
     if (deadline_missed) ++refresh_deadline_misses_;
   }
   void record_refresh_deferred() { ++refresh_deferred_no_space_; }
+  void record_dlu_completed(const HbfDlu::Timing& timing);
+  void record_dlu_timeout() { ++dlu_timeouts_; }
+  void record_dlu_rejection(HbfStatus status);
+  void record_dlu_forwarded(std::uint64_t bytes) {
+    ++dlu_forwarded_reads_;
+    dlu_forwarded_bytes_ += bytes;
+  }
+  void record_dlu_pending_read() { ++dlu_pending_reads_; }
+  void record_read_cache_hit(std::uint64_t bytes) {
+    ++read_cache_hits_;
+    read_cache_hit_bytes_ += bytes;
+  }
+  void record_read_cache_miss() { ++read_cache_misses_; }
+  void record_read_cache_eviction() { ++read_cache_evictions_; }
   void set_topology(std::uint32_t stacks, std::uint32_t dies_per_stack,
                     std::uint32_t planes_per_die,
                     std::uint32_t ports_per_stack,
@@ -1029,6 +1148,15 @@ class StatsCollector {
   double p99_latency_ns() const;
   double percentile_latency_ns(double quantile) const;
   std::uint64_t failed_requests() const { return failed_requests_; }
+  std::uint64_t advisory_requests() const { return advisory_requests_; }
+  std::uint64_t retry_required_requests() const {
+    return retry_required_requests_;
+  }
+  std::uint64_t read_cache_hits() const { return read_cache_hits_; }
+  std::uint64_t read_cache_misses() const { return read_cache_misses_; }
+  std::uint64_t read_cache_evictions() const {
+    return read_cache_evictions_;
+  }
   std::uint64_t read_retries() const { return read_retries_; }
   std::uint64_t corrected_reads() const { return corrected_reads_; }
   std::uint64_t uncorrectable_reads() const { return uncorrectable_reads_; }
@@ -1107,12 +1235,15 @@ class StatsCollector {
   std::uint64_t completed_bytes_ = 0;
   std::uint64_t successful_bytes_ = 0;
   std::uint64_t failed_requests_ = 0;
+  std::uint64_t advisory_requests_ = 0;
+  std::uint64_t retry_required_requests_ = 0;
   std::uint64_t read_retries_ = 0;
   std::uint64_t corrected_reads_ = 0;
   std::uint64_t uncorrectable_reads_ = 0;
   std::uint64_t program_failures_ = 0;
   std::uint64_t program_failure_notices_ = 0;
   std::uint64_t erase_failures_ = 0;
+  std::uint64_t page0_auto_erases_ = 0;
   std::uint64_t retired_blocks_ = 0;
   std::uint64_t retired_stripes_ = 0;
   std::uint64_t total_physical_capacity_bytes_ = 0;
@@ -1137,6 +1268,20 @@ class StatsCollector {
   std::uint64_t failed_refresh_jobs_ = 0;
   std::uint64_t refresh_deadline_misses_ = 0;
   std::uint64_t refresh_deferred_no_space_ = 0;
+  std::uint64_t completed_dlus_ = 0;
+  std::uint64_t dlu_timeouts_ = 0;
+  std::uint64_t dlu_overlaps_ = 0;
+  std::uint64_t dlu_capacity_rejections_ = 0;
+  std::uint64_t dlu_forwarded_reads_ = 0;
+  std::uint64_t dlu_forwarded_bytes_ = 0;
+  std::uint64_t dlu_pending_reads_ = 0;
+  std::uint64_t read_cache_hits_ = 0;
+  std::uint64_t read_cache_misses_ = 0;
+  std::uint64_t read_cache_evictions_ = 0;
+  std::uint64_t read_cache_hit_bytes_ = 0;
+  SimTime dlu_total_h2d_wait_ns_ = 0;
+  SimTime dlu_total_h2d_service_ns_ = 0;
+  LatencyHistogram dlu_assembly_latencies_;
   std::uint64_t min_free_stripes_ = 0;
   std::uint64_t host_visible_stripes_ = 0;
   bool observed_free_stripes_ = false;
@@ -1233,6 +1378,14 @@ class Simulator {
   const Plane& plane(const PhysicalAddr& paddr) const;
   DieState& die(const PhysicalAddr& paddr);
   const DieState& die(const PhysicalAddr& paddr) const;
+  BankState& bank(const PhysicalAddr& paddr);
+  const BankState& bank(const PhysicalAddr& paddr) const;
+  std::uint32_t bank_index(const PhysicalAddr& paddr) const;
+  bool read_cache_lookup(const PhysicalAddr& paddr, SimTime now);
+  void read_cache_fill(const PhysicalAddr& paddr, SimTime now,
+                       bool measured);
+  void invalidate_read_cache_page(const PhysicalAddr& paddr);
+  void invalidate_read_cache_block(const PhysicalAddr& paddr);
   SimTime command_ready_time(const SubRequest& subrequest) const;
   void claim_command(const SubRequest& subrequest, SimTime now,
                      bool shared_command);
@@ -1335,6 +1488,8 @@ class Simulator {
   std::unordered_map<std::uint64_t, SubRequest> subrequests_;
   std::vector<Plane> planes_;
   std::vector<DieState> dies_;
+  std::vector<BankState> banks_;
+  std::uint64_t read_cache_clock_ = 0;
   std::vector<std::uint32_t> active_per_die_;
   std::vector<std::uint32_t> active_per_stack_;
   std::vector<std::uint32_t> dispatch_cursor_per_stack_;

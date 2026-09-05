@@ -5,6 +5,15 @@
 
 namespace hbfsim {
 
+HostRouter::HostRouter(const Config& config)
+    : config_(config),
+      owned_channels_(std::make_unique<HbfChannelDomain>(config)),
+      channels_(owned_channels_.get()) {}
+
+HostRouter::HostRouter(const Config& config,
+                       const HbfChannelDomain& channels)
+    : config_(config), channels_(&channels) {}
+
 LinkResource::Reservation LinkResource::reserve_window(SimTime now,
                                                        std::uint64_t bytes) {
   const SimTime start = std::max(now, free_at_);
@@ -37,7 +46,7 @@ LinkResource::Reservation DataFabric::reserve_window(
 HostRoute HostRouter::route(std::uint64_t logical_addr,
                             const PhysicalAddr& media_address) const {
   if (config_.simulation_profile != SimulationProfile::MediaResearch) {
-    const auto address = channels_.translate(logical_addr);
+    const auto address = channels_->translate(logical_addr);
     return {address.channel / config_.host_channels_per_stack,
             address.channel % config_.host_channels_per_stack,
             address.channel, address.local_address, address.axi_port,

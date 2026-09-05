@@ -6,6 +6,11 @@ hbf:
   channel_count: 4
   channel_interleave: 4KiB
   page0_auto_erase: true
+  media_mapping:
+    policy: fine_stripe
+  read_cache:
+    enabled: true
+    entries_per_bank: 2
   dlu:
     size: 4KiB
     max_pending: 64
@@ -29,6 +34,7 @@ host_interface:
   fixed_latency_ns: 50
 nand:
   dies_per_stack: 4
+  banks_per_die: 4
   planes_per_die: 4
   blocks_per_plane: 16
   pages_per_block: 64

@@ -1,6 +1,6 @@
 # HBFSim 设计文档
 
-本目录记录 HBFSim v0.3.5 的架构、模型语义和实验方法。文档以当前代码实现为准。
+本目录记录 HBFSim v0.4.0 的架构、模型语义和实验方法。文档以当前代码实现为准。
 
 ## 文档索引
 
@@ -19,6 +19,11 @@
 - [V0.3.3_AXI.md](V0.3.3_AXI.md)：1/2/4 AXI Port、地址交织、outstanding 和 AXI ID completion ordering。
 - [V0.3.4_STATUS.md](V0.3.4_STATUS.md)：Read/Write Status 编码、`HbfResponse` 接入和异常边界。
 - [V0.3.5_DLU.md](V0.3.5_DLU.md)：64B fragment、4KiB DLU、Pending/timeout、Read forwarding 与 Page-0 Auto-Erase。
+- [V0.3.6_SEMANTICS.md](V0.3.6_SEMANTICS.md)：Profile 默认值、协议校验、Completion Class 与数据有效性。
+- [V0.3.7_CHANNEL_MEDIA_MAPPING.md](V0.3.7_CHANNEL_MEDIA_MAPPING.md)：Channel 内 Linear/Fine Stripe 放置策略和唯一 Channel Domain。
+- [V0.3.8_DLU_OBSERVABILITY.md](V0.3.8_DLU_OBSERVABILITY.md)：DLU 聚合时延、H2D 成本、统计和 Deadline Heap。
+- [V0.3.9_AUTO_ERASE_EVENTS.md](V0.3.9_AUTO_ERASE_EVENTS.md)：Page-0 Auto-Erase 的独立 Erase/Program 事件阶段。
+- [V0.4.0_BANK_READ_CACHE.md](V0.4.0_BANK_READ_CACHE.md)：Bank 命令域与双条目 4KiB Read Cache。
 
 ## 设计定位
 

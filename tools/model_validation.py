@@ -20,6 +20,9 @@ DEFAULT_TESTS = (
     "spec_axi",
     "spec_status",
     "spec_dlu",
+    "spec_semantic",
+    "spec_media_mapping",
+    "spec_read_cache",
     "model_validation",
     "stripe_mapping",
     "parallelism_group",
@@ -77,6 +80,7 @@ def write_markdown(path: Path, report: dict[str, object]) -> None:
     lines.extend([
         "",
         "The gate covers Spec Profile/response/component boundaries, "
+        "completion semantics, Channel media placement, Bank Read Cache, "
         "plane/request-size scaling, sequential stripe and generation "
         "invariants, pipelined copy, steady-state Host GC, deadline refresh, "
         "wear/retirement, resource accounting, and timing.",

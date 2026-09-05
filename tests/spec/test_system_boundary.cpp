@@ -39,6 +39,8 @@ int main() {
   CHECK(system.mapper().stripe_mapping() == nullptr);
   CHECK(&system.mapper() == &system.mapper());
   CHECK(&system.host_router() == &system.host_router());
+  CHECK(&system.channels() == &system.mapper().channels());
+  CHECK(&system.channels() == &system.host_router().channels());
   CHECK(&system.reliability() == &system.reliability());
   CHECK(&system.host_gc_manager() == &system.host_gc_manager());
   CHECK(&system.refresh_manager() == &system.refresh_manager());

@@ -65,7 +65,7 @@ void Simulator::complete_subrequest(std::uint64_t id, SimTime now) {
   auto request_it = requests_.find(parent_id);
   auto& request = request_it->second;
   request.failed = request.failed || sub.failed ||
-                   sub.status != HbfStatus::Success;
+                   !hbf_data_valid(sub.status);
   if (sub.status != HbfStatus::Success)
     request.status = sub.status;
   const bool request_done = --request.pending_subreqs == 0;
@@ -131,9 +131,11 @@ void Simulator::handle(const Event& event) {
   }
   if (event.type == EventType::DluTimeout) {
     for (const auto& expired : system_.dlu_assembler().expire(now_)) {
+      bool measured = false;
       for (const auto request_id : expired.request_ids) {
         const auto request = requests_.find(request_id);
         if (request == requests_.end()) continue;
+        measured = measured || request->second.measured;
         request->second.complete_time = now_;
         request->second.failed = true;
         request->second.status = expired.status;
@@ -142,6 +144,7 @@ void Simulator::handle(const Event& event) {
         publish_response(request->second);
         requests_.erase(request);
       }
+      if (measured) stats_.record_dlu_timeout();
     }
     return;
   }
@@ -233,6 +236,8 @@ void Simulator::handle(const Event& event) {
       } else {
         bitmap_clear(block.failed_bitmap, sub.paddr.page);
       }
+      if (!sub.failed && bitmap_test(block.valid_bitmap, sub.paddr.page))
+        read_cache_fill(sub.paddr, now_, is_measured(sub.parent_id));
       clear_transient_page_state(sub.paddr);
       stop_array_tracking(sub, now_);
       sub.latency.array_service_ns += now_ - sub.array_active_since;
@@ -264,6 +269,70 @@ void Simulator::handle(const Event& event) {
       program_ready_.at(sub.paddr.stack).push_back(sub.id);
       dispatch_ready_programs(sub.paddr.stack, now_);
       dispatch_stack(sub.paddr.stack, now_);
+      break;
+    }
+    case EventType::NandAutoEraseDone: {
+      auto& sub = subrequests_.at(event.subreq_id);
+      if (sub.array_completion_time != now_) break;
+      auto& target = plane(sub.paddr);
+      auto& block = target.blocks.at(sub.paddr.block);
+      stop_array_tracking(sub, now_);
+      const auto erase_service = now_ - sub.array_active_since;
+      sub.latency.array_service_ns += erase_service;
+      sub.latency.auto_erase_service_ns += erase_service;
+      release_array(sub);
+
+      if (reliability_.erase_failed(block.erase_count)) {
+        sub.auto_erase_failed = true;
+        sub.failed = true;
+        sub.status = HbfStatus::ReducedCapacity;
+        if (is_measured(sub.parent_id)) stats_.record_erase_failure();
+        retire_block(sub.paddr);
+      } else {
+        invalidate_read_cache_block(sub.paddr);
+        block.state = BlockState::Free;
+        block.next_program_page = 0;
+        block.valid_pages = 0;
+        block.invalid_pages = 0;
+        block.valid_bitmap.clear();
+        block.invalid_bitmap.clear();
+        block.failed_bitmap.clear();
+        ++block.erase_count;
+        mapper_.on_erase(sub.paddr);
+        if (config_.max_erase_cycles != 0 &&
+            block.erase_count >= config_.max_erase_cycles) {
+          sub.auto_erase_retired = true;
+          sub.failed = true;
+          sub.status = HbfStatus::ReducedCapacity;
+          retire_block(sub.paddr);
+        }
+      }
+
+      const auto stack = sub.paddr.stack;
+      if (sub.failed) {
+        target.active_subrequest.reset();
+        target.busy = false;
+        complete_subrequest(sub.id, now_);
+      } else {
+        const auto ready = now_ + config_.t_whr_ns;
+        sub.ready_time = ready;
+        target.ready_at = ready;
+        block.ready_at = ready;
+        die(sub.paddr).ready_at =
+            std::max(die(sub.paddr).ready_at, ready);
+        schedule(ready, EventType::NandAutoEraseProgramReady,
+                 sub.parent_id, sub.id);
+      }
+      dispatch_ready_programs(stack, now_);
+      dispatch_stack(stack, now_);
+      break;
+    }
+    case EventType::NandAutoEraseProgramReady: {
+      auto& sub = subrequests_.at(event.subreq_id);
+      auto& target = plane(sub.paddr);
+      target.active_subrequest.reset();
+      target.busy = false;
+      start_program(sub.id, now_);
       break;
     }
     case EventType::NandProgramDone: {
@@ -349,6 +418,7 @@ void Simulator::handle(const Event& event) {
         if (is_measured(sub.parent_id)) stats_.record_erase_failure();
         retire_block(sub.paddr);
       } else {
+        invalidate_read_cache_block(sub.paddr);
         block.state = BlockState::Free;
         block.next_program_page = 0;
         block.valid_pages = 0;
@@ -412,6 +482,17 @@ void Simulator::handle(const Event& event) {
       schedule(host.completion,
                EventType::SubreqDone, request.id, sub.id);
       dispatch_stack(sub.paddr.stack, now_);
+      break;
+    }
+    case EventType::ReadCacheDataOutDone: {
+      auto& sub = subrequests_.at(event.subreq_id);
+      const auto host = reserve_host(
+          sub.host_route, HostLinkDirection::DeviceToHost, now_, sub.bytes,
+          is_measured(sub.parent_id));
+      sub.latency.host_data_wait_ns += host.start - now_;
+      sub.latency.host_data_service_ns += host.completion - host.start;
+      schedule(host.completion, EventType::SubreqDone,
+               request.id, sub.id);
       break;
     }
     case EventType::SubreqDone:

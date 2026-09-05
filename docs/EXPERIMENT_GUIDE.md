@@ -38,7 +38,7 @@ timestamp_ns,op,address,size,stream[,axi_id,axi_port]
 | `axi_id` | 可选 AXI ID；缺省为 0，只在规范 Profile 中参与同 ID completion 保序 |
 | `axi_port` | 可选 AXI Port；缺省时由地址 interleave 推导，显式值必须与推导结果一致 |
 
-`media_research` Profile 中 Read/Write/Invalidate 的 `size` 必须非零且按 Page 对齐；`hbf_v0_7`/`ai_system` Profile 的 Read/Write 地址和长度按 64B 对齐，且单个请求不能跨越 Channel 或 AXI Port 地址域。规范 Write 以 64B fragment 累积成 4KiB DLU。Invalidate 是 Host-managed 映射的显式逻辑失效控制，不产生 NAND 数据事务；Erase/Refresh 使用地址定位 Block，size 可以为零。Trace 必须按时间戳非递减排列；解析器逐条读取，不把整个文件或全部 HostArrival 事件装入内存。
+`media_research` Profile 中 Read/Write/Invalidate 的 `size` 必须非零且按 Page 对齐；`hbf_v0_7`/`ai_system` Profile 的 Read/Write 地址和长度按 64B 对齐，长度不超过 4KiB，且单个请求不能跨越 Channel、AXI Port 或 Channel-local 4KiB Page/DLU。规范 Write 以 64B fragment 累积成 4KiB DLU。Invalidate 是 Host-managed 映射的显式逻辑失效控制，不产生 NAND 数据事务；Erase/Refresh 使用地址定位 Block，size 可以为零。Trace 必须按时间戳非递减排列；解析器逐条读取，不把整个文件或全部 HostArrival 事件装入内存。
 
 ## 3. 配置参考
 
@@ -69,6 +69,9 @@ timestamp_ns,op,address,size,stream[,axi_id,axi_port]
 | `hbf.channel_count` | HBF Channel 总数；0 表示使用 `stacks × channels_per_stack` |
 | `hbf.channel_interleave` | Global Address 到 Channel 的 interleave，支持 64B–4KiB 的 2 的幂 |
 | `hbf.page0_auto_erase` | 在 dirty Block 上写 Page 0 时执行 Erase+Program 组合操作 |
+| `hbf.media_mapping.policy` | 规范 Channel 内放置：`linear/fine_stripe` |
+| `hbf.read_cache.enabled` | 启用每 Bank 的 4KiB Read Cache |
+| `hbf.read_cache.entries_per_bank` | 每 Bank Cache 条目数；规范 Profile 固定为 2 |
 | `hbf.dlu.size` | DLU 大小；规范 Profile 固定为 4KiB |
 | `hbf.dlu.max_pending` | 每个 Channel 同时存在的 Pending DLU 上限 |
 | `hbf.dlu.accumulation_timeout_ns` | 从首个 fragment 到齐套的最长时间 |
@@ -84,6 +87,7 @@ AXI 按 `(Channel, Port, ID)` 保存 issue FIFO：同 ID completion 严格有序
 | Key | 含义 |
 |---|---|
 | `nand.dies_per_stack` | 每 Stack Die 数 |
+| `nand.banks_per_die` | 每 Die Bank 数；必须整除 `planes_per_die` |
 | `nand.planes_per_die` | 每 Die Plane 数 |
 | `nand.blocks_per_plane` | 每 Plane Block 数 |
 | `nand.pages_per_block` | 每 Block Page 数 |

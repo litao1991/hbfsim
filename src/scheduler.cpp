@@ -114,8 +114,12 @@ SimTime Simulator::command_ready_time(const SubRequest& subrequest) const {
   const auto& target = plane(subrequest.paddr);
   const auto& block = target.blocks.at(subrequest.paddr.block);
   const auto& die_state = die(subrequest.paddr);
+  const auto command_ready =
+      config_.simulation_profile == SimulationProfile::MediaResearch
+          ? die_state.command_ready_at
+          : bank(subrequest.paddr).command_ready_at;
   return std::max({subrequest.ready_time, target.ready_at, block.ready_at,
-                   die_state.ready_at, die_state.command_ready_at});
+                   die_state.ready_at, command_ready});
 }
 
 void Simulator::claim_command(const SubRequest& subrequest, SimTime now,
@@ -123,9 +127,15 @@ void Simulator::claim_command(const SubRequest& subrequest, SimTime now,
   auto& target = plane(subrequest.paddr);
   target.ready_at = std::max(target.ready_at, now + config_.t_ccs_ns);
   if (!shared_command) {
-    auto& die_state = die(subrequest.paddr);
-    die_state.command_ready_at =
-        std::max(die_state.command_ready_at, now + config_.t_ccs_ns);
+    if (config_.simulation_profile == SimulationProfile::MediaResearch) {
+      auto& die_state = die(subrequest.paddr);
+      die_state.command_ready_at =
+          std::max(die_state.command_ready_at, now + config_.t_ccs_ns);
+    } else {
+      auto& bank_state = bank(subrequest.paddr);
+      bank_state.command_ready_at =
+          std::max(bank_state.command_ready_at, now + config_.t_ccs_ns);
+    }
   }
 }
 
@@ -143,7 +153,10 @@ bool Simulator::try_suspend_for_read(Plane& target, SimTime now) {
       now - waiting.enqueue_time < config_.source_aging_ns)
     return false;
   if (active.array_completion_time <= now) return false;
-  const auto command_ready = die(active.paddr).command_ready_at;
+  const auto command_ready =
+      config_.simulation_profile == SimulationProfile::MediaResearch
+          ? die(active.paddr).command_ready_at
+          : bank(active.paddr).command_ready_at;
   if (command_ready > now) {
     schedule_dispatch_wake(active.paddr.stack, command_ready);
     return false;
@@ -211,8 +224,12 @@ bool Simulator::try_issue_cached_write(Plane& target, SimTime now) {
   if (!scheduled) return false;
   auto& next = subrequests_.at(*scheduled);
   if (next.op != OpType::Write) return false;
-  const auto ready = std::max({next.ready_time, die(next.paddr).ready_at,
-                               die(next.paddr).command_ready_at});
+  const auto command_ready =
+      config_.simulation_profile == SimulationProfile::MediaResearch
+          ? die(next.paddr).command_ready_at
+          : bank(next.paddr).command_ready_at;
+  const auto ready =
+      std::max({next.ready_time, die(next.paddr).ready_at, command_ready});
   if (ready > now) {
     schedule_dispatch_wake(next.paddr.stack, ready);
     return false;
@@ -426,6 +443,7 @@ void Simulator::issue(std::uint64_t id, SimTime now, bool shared_command) {
       throw std::runtime_error("ERASE_ON_BAD_OR_ERASING_BLOCK");
     }
     erased_blocks_.insert(block_key(sub.paddr));
+    invalidate_read_cache_block(sub.paddr);
     block.state = BlockState::Erasing;
   } else if (block.bad || block.state == BlockState::Bad ||
              block.state == BlockState::Erasing) {
@@ -468,6 +486,7 @@ void Simulator::start_program(std::uint64_t id, SimTime now,
     throw std::runtime_error("STALE_GENERATION");
   auto& target = plane(sub.paddr);
   auto& block = target.blocks.at(sub.paddr.block);
+  invalidate_read_cache_page(sub.paddr);
   if (target.cached_write == sub.id) target.cached_write.reset();
   if (block.bad || block.state == BlockState::Bad ||
       block.state == BlockState::Erasing) {
@@ -490,22 +509,26 @@ void Simulator::start_program(std::uint64_t id, SimTime now,
   if (auto_erase) {
     sub.page0_auto_erase = true;
     erased_blocks_.insert(block_key(sub.paddr));
-    if (reliability_.erase_failed(block.erase_count)) {
-      sub.auto_erase_failed = true;
-    } else {
-      block.state = BlockState::Free;
-      block.next_program_page = 0;
-      block.valid_pages = 0;
-      block.invalid_pages = 0;
-      block.valid_bitmap.clear();
-      block.invalid_bitmap.clear();
-      block.failed_bitmap.clear();
-      ++block.erase_count;
-      mapper_.on_erase(sub.paddr);
-      sub.auto_erase_retired =
-          config_.max_erase_cycles != 0 &&
-          block.erase_count >= config_.max_erase_cycles;
-    }
+    invalidate_read_cache_block(sub.paddr);
+    block.state = BlockState::Erasing;
+    target.busy = true;
+    target.active_subrequest = sub.id;
+    claim_command(sub, now, shared_command);
+    const auto die_index = static_cast<std::size_t>(sub.paddr.stack) *
+                               config_.dies_per_stack +
+                           sub.paddr.die;
+    ++active_per_die_.at(die_index);
+    ++active_per_stack_.at(sub.paddr.stack);
+    start_array_tracking(sub, now);
+    record_queue_depth();
+    sub.array_active_since = now;
+    const auto done = now + config_.erase_ns;
+    sub.array_completion_time = done;
+    target.ready_at = done;
+    block.ready_at = done;
+    schedule(done, EventType::NandAutoEraseDone, sub.parent_id, sub.id);
+    if (is_measured(sub.parent_id)) stats_.record_page0_auto_erase();
+    return;
   }
 
   if (!sub.auto_erase_failed && !sub.auto_erase_retired &&
@@ -548,10 +571,7 @@ void Simulator::start_program(std::uint64_t id, SimTime now,
   start_array_tracking(sub, now);
   record_queue_depth();
   sub.array_active_since = now;
-  const auto done = now + (sub.page0_auto_erase ? config_.erase_ns : 0) +
-                    ((!sub.auto_erase_failed && !sub.auto_erase_retired)
-                         ? config_.program_ns
-                         : 0);
+  const auto done = now + config_.program_ns;
   sub.array_completion_time = done;
   target.ready_at = done;
   block.ready_at = done;

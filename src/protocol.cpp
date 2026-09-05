@@ -92,6 +92,50 @@ std::uint64_t HbfChannelDomain::global_address(
   return global;
 }
 
+HbfValidationResult HbfProtocolValidator::validate(
+    const TraceEntry& entry) const {
+  HbfValidationResult result;
+  try {
+    result.address = channels_.translate(entry.address);
+  } catch (const std::out_of_range& error) {
+    return {HbfStatus::InvalidAddress, error.what(), std::nullopt};
+  }
+
+  if (entry.size != 0 &&
+      entry.size - 1 > channels_.total_capacity() - 1 - entry.address)
+    return {HbfStatus::InvalidAddress,
+            "request range exceeds HBF capacity", result.address};
+
+  if (entry.op != OpType::Read && entry.op != OpType::Write)
+    return result;
+  if (entry.size == 0 || entry.address % 64 != 0 || entry.size % 64 != 0)
+    return {HbfStatus::InvalidUserField,
+            "HBF Read/Write transfers must be non-empty and 64B aligned",
+            result.address};
+  if (entry.size > config_.dlu_size)
+    return {HbfStatus::InvalidUserField,
+            "one HBF Read/Write command cannot exceed one 4KiB DLU",
+            result.address};
+
+  const auto last = channels_.translate(entry.address + entry.size - 1);
+  if (last.channel != result.address->channel ||
+      last.axi_port != result.address->axi_port)
+    return {HbfStatus::InvalidAddress,
+            "request crosses an HBF Channel or AXI Port range",
+            result.address};
+  if (result.address->local_address / config_.dlu_size !=
+      last.local_address / config_.dlu_size)
+    return {HbfStatus::InvalidAddress,
+            "request crosses a Channel-local NAND Page/DLU boundary",
+            result.address};
+  if (entry.axi_port != std::numeric_limits<std::uint32_t>::max() &&
+      entry.axi_port != result.address->axi_port)
+    return {HbfStatus::InvalidAddress,
+            "address is outside the selected AXI Port range",
+            result.address};
+  return result;
+}
+
 std::size_t AxiOrderTracker::EndpointHash::operator()(
     const EndpointKey& key) const {
   std::size_t result = key.channel;
@@ -170,7 +214,8 @@ DluAssembler::DluAssembler(const Config& config)
 DluAssemblyResult DluAssembler::submit(
     std::uint64_t request_id, const HbfChannelAddress& address,
     std::uint64_t bytes, SimTime now,
-    std::optional<SimTime> data_ready_at) {
+    std::optional<SimTime> data_ready_at, SimTime h2d_wait_ns,
+    SimTime h2d_service_ns) {
   const auto offset = address.local_address % dlu_size_;
   if (bytes == 0 || bytes > dlu_size_ - offset || offset % 64 != 0 ||
       bytes % 64 != 0)
@@ -187,11 +232,13 @@ DluAssemblyResult DluAssembler::submit(
             ? std::numeric_limits<SimTime>::max()
             : first_arrival + timeout_ns_;
     PendingDlu value;
+    value.generation = next_generation_++;
     value.deadline = deadline;
     const auto fragment_count = dlu_size_ / 64;
     value.coverage.resize((fragment_count + 63) / 64, 0);
     value.fragment_ready_at.resize(fragment_count, 0);
     pending = pending_.emplace(key, std::move(value)).first;
+    deadlines_.push({deadline, key, pending->second.generation});
     ++pending_per_channel_[address.channel];
     created = true;
   }
@@ -212,6 +259,14 @@ DluAssemblyResult DluAssembler::submit(
   }
   value.covered_bytes += bytes;
   value.request_ids.push_back(request_id);
+  const auto arrival = data_ready_at.value_or(now);
+  if (value.timing.fragment_count == 0)
+    value.timing.first_fragment_arrival = arrival;
+  value.timing.last_fragment_arrival =
+      std::max(value.timing.last_fragment_arrival, arrival);
+  value.timing.total_h2d_wait_ns += h2d_wait_ns;
+  value.timing.total_h2d_service_ns += h2d_service_ns;
+  value.timing.fragment_count += static_cast<std::uint32_t>(fragment_count);
   if (value.covered_bytes != dlu_size_)
     return {HbfStatus::Pending, std::nullopt,
             created ? std::optional<SimTime>(value.deadline) : std::nullopt};
@@ -222,31 +277,29 @@ DluAssemblyResult DluAssembler::submit(
     return {HbfStatus::Pending, std::nullopt, std::nullopt};
 
   HbfDlu completed{{key.channel, key.local_base}, dlu_size_,
-                   std::move(value.request_ids)};
+                   std::move(value.request_ids), value.timing};
   pending_.erase(pending);
   --pending_per_channel_.at(key.channel);
   return {HbfStatus::Success, std::move(completed), std::nullopt};
 }
 
 std::vector<ExpiredDlu> DluAssembler::expire(SimTime now) {
-  std::vector<DluKey> expired_keys;
-  for (const auto& [key, value] : pending_) {
-    if (value.deadline <= now) expired_keys.push_back(key);
-  }
-  std::sort(expired_keys.begin(), expired_keys.end(),
-            [](const DluKey& left, const DluKey& right) {
-              return left.channel != right.channel
-                         ? left.channel < right.channel
-                         : left.local_base < right.local_base;
-            });
   std::vector<ExpiredDlu> expired;
-  expired.reserve(expired_keys.size());
-  for (const auto& key : expired_keys) {
-    auto it = pending_.find(key);
-    expired.push_back({{key.channel, key.local_base},
-                       std::move(it->second.request_ids)});
+  while (!deadlines_.empty() && deadlines_.top().deadline <= now) {
+    const auto entry = deadlines_.top();
+    deadlines_.pop();
+    auto it = pending_.find(entry.key);
+    if (it == pending_.end() ||
+        it->second.generation != entry.generation ||
+        it->second.deadline != entry.deadline)
+      continue;
+    expired.push_back({{entry.key.channel, entry.key.local_base},
+                       std::move(it->second.request_ids),
+                       HbfStatus::DluAccumulationTimeout,
+                       it->second.timing});
+    const auto channel = entry.key.channel;
     pending_.erase(it);
-    --pending_per_channel_.at(key.channel);
+    --pending_per_channel_.at(channel);
   }
   return expired;
 }

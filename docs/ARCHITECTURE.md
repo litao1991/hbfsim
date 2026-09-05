@@ -1,4 +1,4 @@
-# HBFSim v0.3.5 架构设计
+# HBFSim v0.4.0 架构设计
 
 ## 1. 目标与范围
 
@@ -83,6 +83,8 @@ Device
     ├── Base-Die DataFabric
     │   └── Data Port [ports_per_stack]
     └── Die [dies_per_stack]
+        ├── Bank [banks_per_die]
+        │   └── Read Cache [2 × 4KiB]
         └── Plane [planes_per_die]
             └── Block [blocks_per_plane]
                 └── Page [pages_per_block]
@@ -126,7 +128,7 @@ NAND Pool 不跨 Stack，也不会访问其他 Channel 的介质。
 
 ## 5. 请求与事件模型
 
-Host 请求先转成 `Request`。研究路径按 Page 边界拆成 `SubRequest`；规范路径先校验 64B 对齐以及 Channel/AXI Port 边界，再由 DLU 或 Read 路径形成 Page 事务。`FlashTransaction` 是 `SubRequest` 的显式语义别名。Erase 和 Refresh 生成一个维护事务；Read/Write 可生成多个 Page 事务。
+Host 请求先转成 `Request`。研究路径按 Page 边界拆成 `SubRequest`；规范路径由 `HbfProtocolValidator` 校验 64B 对齐、4KiB 上限以及 Channel/AXI Port/Channel-local Page 边界，再由 DLU 或 Read 路径形成 Page 事务。`FlashTransaction` 是 `SubRequest` 的显式语义别名。Erase 和 Refresh 生成一个维护事务。
 
 规范 Write 先以 64B 对齐 fragment 进入 `DluAssembler`。每个 Channel 独立限制 Pending
 DLU 数；完整 4KiB 后才生成一个 NAND Program。首个 fragment 启动 timeout 事件，超时
@@ -136,6 +138,11 @@ Read Status `0xA`。写 Page 0 遇到 dirty Block 时执行 Erase+Program 组合
 AXI 事务按 `(Channel, Port, ID)` 维护 issue FIFO：同 ID completion 严格保序，不同 ID
 可以乱序释放。这里只建模 AR/AW/W/R/B 事务级顺序、outstanding 和带宽竞争，不模拟
 UCIe PHY/flit 信号。
+
+规范 Read 在 Pending DLU 查询之后访问每 Bank 两条目的 4KiB Read Cache。命中只经过
+DataFabric 与 Host D2H；未命中进入 NAND Sense，并在成功完成时填充 Cache。Program、
+Erase、Retirement 和 generation 变化会使相关条目失效。Bank 同时是规范路径的命令间隔
+域；研究路径继续保留原有 Die 命令域。
 
 主要事件如下：
 

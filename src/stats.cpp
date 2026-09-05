@@ -48,6 +48,7 @@ void add_breakdown(LatencyBreakdown& total,
   total.nand_queue_wait_ns += value.nand_queue_wait_ns;
   total.nand_command_wait_ns += value.nand_command_wait_ns;
   total.array_service_ns += value.array_service_ns;
+  total.auto_erase_service_ns += value.auto_erase_service_ns;
   total.fabric_wait_ns += value.fabric_wait_ns;
   total.fabric_service_ns += value.fabric_service_ns;
 }
@@ -95,6 +96,11 @@ void StatsCollector::set_topology(std::uint32_t stacks,
 void StatsCollector::record_request(const Request& request) {
   ++completed_requests_;
   if (request.failed) ++failed_requests_;
+  const auto completion = hbf_completion_class(request.status);
+  if (completion == HbfCompletionClass::SuccessWithAdvisory)
+    ++advisory_requests_;
+  else if (completion == HbfCompletionClass::RetryRequired)
+    ++retry_required_requests_;
   if (request.op == OpType::Read) ++read_requests_;
   if (request.op == OpType::Write) ++write_requests_;
   if (request.op == OpType::Read || request.op == OpType::Write) {
@@ -108,6 +114,20 @@ void StatsCollector::record_request(const Request& request) {
   const auto latency = request.complete_time - request.arrival_time;
   latencies_.record(latency);
   op_latencies_[request.op].record(latency);
+}
+
+void StatsCollector::record_dlu_completed(const HbfDlu::Timing& timing) {
+  ++completed_dlus_;
+  dlu_assembly_latencies_.record(timing.assembly_latency_ns());
+  dlu_total_h2d_wait_ns_ += timing.total_h2d_wait_ns;
+  dlu_total_h2d_service_ns_ += timing.total_h2d_service_ns;
+}
+
+void StatsCollector::record_dlu_rejection(HbfStatus status) {
+  if (status == HbfStatus::OverlappingAddress)
+    ++dlu_overlaps_;
+  else if (status == HbfStatus::MaxPendingDluReached)
+    ++dlu_capacity_rejections_;
 }
 
 void StatsCollector::record_subrequest(const SubRequest& subrequest) {
@@ -225,9 +245,35 @@ void StatsCollector::write(const std::string& output_dir,
           << "\ncompleted_bytes," << completed_bytes_
           << "\nsuccessful_bytes," << successful_bytes_
           << "\nfailed_requests," << failed_requests_
+          << "\nadvisory_requests," << advisory_requests_
+          << "\nretry_required_requests," << retry_required_requests_
+          << "\ncompleted_dlus," << completed_dlus_
+          << "\ndlu_timeouts," << dlu_timeouts_
+          << "\ndlu_overlaps," << dlu_overlaps_
+          << "\ndlu_capacity_rejections," << dlu_capacity_rejections_
+          << "\ndlu_forwarded_reads," << dlu_forwarded_reads_
+          << "\ndlu_forwarded_bytes," << dlu_forwarded_bytes_
+          << "\ndlu_pending_reads," << dlu_pending_reads_
+          << "\ndlu_assembly_mean_ns," << dlu_assembly_latencies_.mean()
+          << "\ndlu_assembly_p95_ns,"
+          << dlu_assembly_latencies_.percentile(0.95)
+          << "\ndlu_assembly_p99_ns,"
+          << dlu_assembly_latencies_.percentile(0.99)
+          << "\ndlu_total_h2d_wait_ns," << dlu_total_h2d_wait_ns_
+          << "\ndlu_total_h2d_service_ns," << dlu_total_h2d_service_ns_
+          << "\nread_cache_hits," << read_cache_hits_
+          << "\nread_cache_misses," << read_cache_misses_
+          << "\nread_cache_evictions," << read_cache_evictions_
+          << "\nread_cache_hit_bytes," << read_cache_hit_bytes_
+          << "\nread_cache_hit_ratio,"
+          << (read_cache_hits_ + read_cache_misses_ == 0
+                  ? 0.0
+                  : static_cast<double>(read_cache_hits_) /
+                        (read_cache_hits_ + read_cache_misses_))
           << "\nprogram_failures," << program_failures_
           << "\nprogram_failure_notices," << program_failure_notices_
           << "\nerase_failures," << erase_failures_
+          << "\npage0_auto_erases," << page0_auto_erases_
           << "\nretired_blocks," << retired_blocks_
           << "\nretired_stripes," << retired_stripes_
           << "\ntotal_physical_capacity_bytes,"
@@ -337,6 +383,18 @@ void StatsCollector::write(const std::string& output_dir,
             << histogram.percentile(0.999) << '\n';
   }
 
+  std::ofstream dlu(std::filesystem::path(output_dir) / "dlu_summary.csv");
+  dlu << "completed,timeouts,overlaps,capacity_rejections,forwarded_reads,"
+         "forwarded_bytes,pending_reads,assembly_mean_ns,assembly_p95_ns,"
+         "assembly_p99_ns,total_h2d_wait_ns,total_h2d_service_ns\n"
+      << completed_dlus_ << ',' << dlu_timeouts_ << ',' << dlu_overlaps_
+      << ',' << dlu_capacity_rejections_ << ',' << dlu_forwarded_reads_
+      << ',' << dlu_forwarded_bytes_ << ',' << dlu_pending_reads_ << ','
+      << dlu_assembly_latencies_.mean() << ','
+      << dlu_assembly_latencies_.percentile(0.95) << ','
+      << dlu_assembly_latencies_.percentile(0.99) << ','
+      << dlu_total_h2d_wait_ns_ << ',' << dlu_total_h2d_service_ns_ << '\n';
+
   const auto total_planes = static_cast<std::uint32_t>(
       static_cast<std::uint64_t>(stacks_) * dies_per_stack_ *
       planes_per_die_);
@@ -354,7 +412,7 @@ void StatsCollector::write(const std::string& output_dir,
   breakdown << "op,samples,host_command_wait_ns,host_command_service_ns,"
                "host_data_wait_ns,host_data_service_ns,nand_queue_wait_ns,"
                "nand_command_wait_ns,array_service_ns,fabric_wait_ns,"
-               "fabric_service_ns\n";
+               "auto_erase_service_ns,fabric_service_ns\n";
   for (const auto& [op, total] : latency_breakdown_) {
     const auto samples = latency_breakdown_samples_.at(op);
     const auto average = [samples](SimTime value) {
@@ -369,6 +427,7 @@ void StatsCollector::write(const std::string& output_dir,
               << average(total.nand_command_wait_ns) << ','
               << average(total.array_service_ns) << ','
               << average(total.fabric_wait_ns) << ','
+              << average(total.auto_erase_service_ns) << ','
               << average(total.fabric_service_ns) << '\n';
   }
 
@@ -378,7 +437,7 @@ void StatsCollector::write(const std::string& output_dir,
       << "source,op,samples,bytes,failed,host_command_wait_ns,"
          "host_command_service_ns,host_data_wait_ns,host_data_service_ns,"
          "nand_queue_wait_ns,nand_command_wait_ns,array_service_ns,"
-         "fabric_wait_ns,fabric_service_ns\n";
+         "fabric_wait_ns,auto_erase_service_ns,fabric_service_ns\n";
   for (const auto& [key, total] : source_latency_breakdown_) {
     const auto samples = source_latency_samples_.at(key);
     const auto failure = source_failures_.find(key);
@@ -399,6 +458,7 @@ void StatsCollector::write(const std::string& output_dir,
                      << average(total.nand_command_wait_ns) << ','
                      << average(total.array_service_ns) << ','
                      << average(total.fabric_wait_ns) << ','
+                     << average(total.auto_erase_service_ns) << ','
                      << average(total.fabric_service_ns) << '\n';
   }
 

@@ -1,8 +1,8 @@
-# HBFSim v0.3.5
+# HBFSim v0.4.0
 
 HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style NAND stacks. It models performance-relevant resources rather than packet- or bit-level hardware details.
 
-## Included through v0.3.5
+## Included through v0.4.0
 
 - Explicit `media_research`, `hbf_v0_7`, and `ai_system` simulation profiles separate compatibility experiments from the specification-oriented path. HBF/AI profiles default research extensions off.
 - `HbfSystem` is now the device-model composition root for mapping, routing, reliability, Host GC, and Refresh services; `Simulator` retains time and event ownership.
@@ -12,6 +12,11 @@ HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style
 - Each Channel supports 1/2/4 address-interleaved AXI Ports. Transaction-level flow control limits outstanding commands per `(Channel, Port, AXI ID)` and preserves same-ID completion order while allowing different IDs to complete out of order.
 - Spec-profile Read/Write completions carry Table 13 semantic status and protocol code through `HbfResponse`; invalid host requests and media-visible failures no longer require exceptions.
 - The write path accumulates aligned 64B fragments in per-Channel 4KiB DLU buffers. Only a complete DLU enters NAND Program; overlap, capacity pressure, timeout, pending-write reads, forwarding, and Page-0 Auto-Erase are modeled.
+- Profile construction now shares one defaulting path, protocol status is separated from completion class/data validity, and one HBF Read/Write command is constrained to a single 4KiB Channel-local Page/DLU.
+- Specification Channels use an explicit `linear` or `fine_stripe` media-placement policy. `fine_stripe` distributes consecutive Channel-local pages across the Channel-owned Plane pool.
+- DLU timing aggregates all contributing H2D fragments; a generation-checked deadline heap provides scalable timeout handling and summary metrics.
+- Page-0 Auto-Erase is an explicit Erase completion followed by Program, so metadata, failures, retirement, and timing occur at their real phase boundary.
+- Configurable Banks provide independent command-spacing domains. Each Bank has a two-entry 4KiB Read Cache; cache hits bypass NAND Sense while retaining DataFabric and Host D2H contention.
 
 - Host commands and write/read payloads use separate staged events. The research path splits requests at Page boundaries; the specification path additionally respects Channel/AXI Port boundaries and assembles 64B Write fragments into 4KiB DLUs.
 - Stack → Die → Plane topology, with per-die and per-stack array-concurrency caps.
@@ -40,7 +45,7 @@ HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style
 - `ResourceTracker` accumulates Array/Fabric/Host occupancy and overlap online with memory bounded by topology. Queue depth is interval-sampled rather than retained at every state change.
 - `tools/experiment_runner.py` expands Cartesian parameter sweeps, runs them in parallel, records Git SHA and SHA-256 hashes, preserves input and fully resolved configs, aggregates metrics, and creates dependency-free SVG plots.
 
-Explicit in-place Refresh remains available as a maintenance operation. Automatic Refresh uses copy/remap/erase semantics. v0.2.7 added a repeatable model-validation gate; v0.3.0 added configurable Parallelism Groups while retaining full-device stripes by default. Wear leveling, temperature-aware retention, detailed voltage-threshold distributions, HBM overlap, Read Cache/Batch Read, and packet-level UCIe remain outside v0.3.5.
+Explicit in-place Refresh remains available as a maintenance operation. Automatic Refresh uses copy/remap/erase semantics. v0.2.7 added a repeatable model-validation gate; v0.3.0 added configurable Parallelism Groups while retaining full-device stripes by default. Wear leveling, temperature-aware retention, detailed voltage-threshold distributions, HBM overlap, Batch Read, Host-driven Retry/Replay, and packet-level UCIe remain outside v0.4.0.
 
 The reliability model is command-level rather than bit-level: each read samples a raw error count from a Poisson distribution, ECC corrects counts within `ecc_correctable_bits`, and each retry multiplies BER by `retry_ber_multiplier`. A failed program consumes its sequential-program position but does not replace the previous L2P mapping.
 
@@ -97,6 +102,8 @@ Parallelism Group geometry and compatibility are documented in [`docs/V0.3.0_PAR
 The v0.3.1 Profile, `HbfSystem`, response, and compliance-test boundary is documented in [`docs/V0.3.1_SPEC_FOUNDATION.md`](docs/V0.3.1_SPEC_FOUNDATION.md). `configs/hbf_v0_7_foundation.yaml` is the specification-oriented starter configuration.
 
 The specification-oriented programming-model increments are documented in [`docs/V0.3.2_CHANNEL.md`](docs/V0.3.2_CHANNEL.md), [`docs/V0.3.3_AXI.md`](docs/V0.3.3_AXI.md), [`docs/V0.3.4_STATUS.md`](docs/V0.3.4_STATUS.md), and [`docs/V0.3.5_DLU.md`](docs/V0.3.5_DLU.md).
+
+The semantic-convergence and read-path increments are documented in [`docs/V0.3.6_SEMANTICS.md`](docs/V0.3.6_SEMANTICS.md), [`docs/V0.3.7_CHANNEL_MEDIA_MAPPING.md`](docs/V0.3.7_CHANNEL_MEDIA_MAPPING.md), [`docs/V0.3.8_DLU_OBSERVABILITY.md`](docs/V0.3.8_DLU_OBSERVABILITY.md), [`docs/V0.3.9_AUTO_ERASE_EVENTS.md`](docs/V0.3.9_AUTO_ERASE_EVENTS.md), and [`docs/V0.4.0_BANK_READ_CACHE.md`](docs/V0.4.0_BANK_READ_CACHE.md).
 
 Run the supplied four-point reproducible sweep with `python3 tools/experiment_runner.py experiments/example_sweep.json`. See [`docs/V0.2.6_SCALABLE_STATS_EXPERIMENTS.md`](docs/V0.2.6_SCALABLE_STATS_EXPERIMENTS.md) for the manifest schema and output contract.
 

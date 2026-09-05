@@ -19,6 +19,14 @@ const char* mapping_name(MappingPolicy value) {
   return "unknown";
 }
 
+const char* channel_mapping_name(ChannelMediaPolicy value) {
+  switch (value) {
+    case ChannelMediaPolicy::Linear: return "linear";
+    case ChannelMediaPolicy::FineStripe: return "fine_stripe";
+  }
+  return "unknown";
+}
+
 const char* stripe_scope_name(StripeScope value) {
   switch (value) {
     case StripeScope::Device: return "device";
@@ -75,6 +83,10 @@ void Config::write_resolved_yaml(const std::string& path) const {
       << "\n  effective_channel_count: " << effective_hbf_channels
       << "\n  channel_interleave: " << hbf_channel_interleave
       << "\n  page0_auto_erase: " << boolean(page0_auto_erase)
+      << "\n  media_mapping:\n    policy: "
+      << channel_mapping_name(channel_media_policy)
+      << "\n  read_cache:\n    enabled: " << boolean(read_cache_enabled)
+      << "\n    entries_per_bank: " << read_cache_entries_per_bank
       << "\n  dlu:\n    size: " << dlu_size
       << "\n    max_pending: " << max_pending_dlus
       << "\n    accumulation_timeout_ns: "
@@ -97,6 +109,7 @@ void Config::write_resolved_yaml(const std::string& path) const {
       << "GBps\n  fixed_latency_ns: " << host_fixed_latency_ns
       << "\n  full_duplex: " << boolean(host_full_duplex)
       << "\nnand:\n  dies_per_stack: " << dies_per_stack
+      << "\n  banks_per_die: " << banks_per_die
       << "\n  planes_per_die: " << planes_per_die
       << "\n  blocks_per_plane: " << blocks_per_plane
       << "\n  pages_per_block: " << pages_per_block

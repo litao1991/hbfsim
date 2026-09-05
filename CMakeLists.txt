@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(hbfsim VERSION 0.3.5 LANGUAGES CXX)
+project(hbfsim VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,7 +38,7 @@ if(BUILD_TESTING)
     target_link_libraries(test_${test_name} PRIVATE hbfsim_core)
     add_test(NAME ${test_name} COMMAND test_${test_name})
   endforeach()
-  foreach(spec_test_name profile response system_boundary channel axi status dlu)
+  foreach(spec_test_name profile response system_boundary channel axi status dlu semantic media_mapping read_cache)
     add_executable(test_spec_${spec_test_name}
       tests/spec/test_${spec_test_name}.cpp)
     target_link_libraries(test_spec_${spec_test_name} PRIVATE hbfsim_core)

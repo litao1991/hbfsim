@@ -46,6 +46,10 @@ Simulator::Simulator(Config config)
     target.blocks.resize(config_.blocks_per_plane);
   dies_.resize(static_cast<std::size_t>(config_.stacks) *
                config_.dies_per_stack);
+  banks_.resize(static_cast<std::size_t>(config_.stacks) *
+                config_.dies_per_stack * config_.banks_per_die);
+  for (auto& bank_state : banks_)
+    bank_state.read_cache.resize(config_.read_cache_entries_per_bank);
   active_per_die_.assign(dies_.size(), 0);
   active_per_stack_.assign(config_.stacks, 0);
   dispatch_cursor_per_stack_.assign(config_.stacks, 0);
@@ -154,40 +158,14 @@ void Simulator::submit(const TraceEntry& entry) {
                         : "invalidate range must be non-empty and aligned");
     return;
   }
-  if (spec_profile &&
-      (entry.op == OpType::Read || entry.op == OpType::Write) &&
-      (entry.address % 64 != 0 || entry.size % 64 != 0)) {
-    reject(HbfStatus::InvalidUserField,
-           "HBF Read/Write transfers must be 64B aligned");
-    return;
-  }
-
   std::optional<HbfChannelAddress> channel_address;
   if (spec_profile) {
-    try {
-      channel_address = system_.channels().translate(entry.address);
-      if (entry.size != 0 &&
-          entry.size - 1 >
-              system_.channels().total_capacity() - 1 - entry.address) {
-        reject(HbfStatus::InvalidAddress,
-               "request range exceeds HBF capacity");
-        return;
-      }
-      if (entry.size != 0 &&
-          (entry.op == OpType::Read || entry.op == OpType::Write)) {
-        const auto last = system_.channels().translate(
-            entry.address + entry.size - 1);
-        if (last.channel != channel_address->channel ||
-            last.axi_port != channel_address->axi_port) {
-          reject(HbfStatus::InvalidAddress,
-                 "request crosses an HBF Channel or AXI Port range");
-          return;
-        }
-      }
-    } catch (const std::out_of_range& error) {
-      reject(HbfStatus::InvalidAddress, error.what());
+    const auto validation = system_.protocol_validator().validate(entry);
+    if (!validation.ok()) {
+      reject(validation.status, validation.reason);
       return;
     }
+    channel_address = validation.address;
   }
 
   Request request;
@@ -198,12 +176,6 @@ void Simulator::submit(const TraceEntry& entry) {
   request.size = entry.size;
   request.stream_id = entry.stream;
   if (channel_address) {
-    if (entry.axi_port != std::numeric_limits<std::uint32_t>::max() &&
-        entry.axi_port != channel_address->axi_port) {
-      reject(HbfStatus::InvalidAddress,
-             "address is outside the selected AXI Port range");
-      return;
-    }
     request.axi = {
         channel_address->channel,
         entry.axi_port == std::numeric_limits<std::uint32_t>::max()
@@ -231,7 +203,7 @@ void Simulator::submit(const TraceEntry& entry) {
 
 void Simulator::publish_response(const Request& request) {
   HbfResponse response;
-  if (request.failed) {
+  if (request.status != HbfStatus::Success || request.failed) {
     HbfErrorInfo error;
     error.logical_address = request.logical_addr;
     error.reason = to_string(request.status);
@@ -240,7 +212,8 @@ void Simulator::publish_response(const Request& request) {
         request.status == HbfStatus::Success
             ? HbfStatus::TemporarilyRestricted
             : request.status,
-        std::move(error), request.complete_time);
+        std::move(error), request.complete_time,
+        hbf_data_valid(request.status) ? request.size : 0);
   } else {
     response = HbfResponse::success(request.id, request.complete_time,
                                     request.size);
@@ -281,6 +254,87 @@ const DieState& Simulator::die(const PhysicalAddr& address) const {
   return dies_.at(static_cast<std::size_t>(address.stack) *
                       config_.dies_per_stack +
                   address.die);
+}
+
+std::uint32_t Simulator::bank_index(const PhysicalAddr& address) const {
+  const auto die_index = static_cast<std::uint64_t>(address.stack) *
+                             config_.dies_per_stack +
+                         address.die;
+  return static_cast<std::uint32_t>(
+      die_index * config_.banks_per_die +
+      address.plane % config_.banks_per_die);
+}
+
+BankState& Simulator::bank(const PhysicalAddr& address) {
+  return banks_.at(bank_index(address));
+}
+
+const BankState& Simulator::bank(const PhysicalAddr& address) const {
+  return banks_.at(bank_index(address));
+}
+
+bool Simulator::read_cache_lookup(const PhysicalAddr& address, SimTime now) {
+  if (!config_.read_cache_enabled) return false;
+  auto& entries = bank(address).read_cache;
+  for (auto& entry : entries) {
+    const auto& tag = entry.page;
+    if (entry.valid && entry.ready_at <= now &&
+        tag.stack == address.stack && tag.die == address.die &&
+        tag.plane == address.plane && tag.block == address.block &&
+        tag.page == address.page && tag.generation == address.generation) {
+      entry.last_use = ++read_cache_clock_;
+      return true;
+    }
+  }
+  return false;
+}
+
+void Simulator::read_cache_fill(const PhysicalAddr& address, SimTime now,
+                                bool measured) {
+  if (!config_.read_cache_enabled) return;
+  auto& entries = bank(address).read_cache;
+  auto victim = entries.end();
+  for (auto it = entries.begin(); it != entries.end(); ++it) {
+    const auto& tag = it->page;
+    if (it->valid && tag.stack == address.stack &&
+        tag.die == address.die && tag.plane == address.plane &&
+        tag.block == address.block && tag.page == address.page &&
+        tag.generation == address.generation) {
+      victim = it;
+      break;
+    }
+    if (!it->valid) {
+      victim = it;
+      break;
+    }
+    if (victim == entries.end() || it->last_use < victim->last_use)
+      victim = it;
+  }
+  if (victim == entries.end()) return;
+  if (victim->valid && measured) stats_.record_read_cache_eviction();
+  *victim = {true, address, now, ++read_cache_clock_};
+}
+
+void Simulator::invalidate_read_cache_page(const PhysicalAddr& address) {
+  if (!config_.read_cache_enabled) return;
+  for (auto& entry : bank(address).read_cache) {
+    const auto& tag = entry.page;
+    if (entry.valid && tag.stack == address.stack &&
+        tag.die == address.die && tag.plane == address.plane &&
+        tag.block == address.block && tag.page == address.page)
+      entry.valid = false;
+  }
+}
+
+void Simulator::invalidate_read_cache_block(const PhysicalAddr& address) {
+  if (!config_.read_cache_enabled) return;
+  for (auto& entry : bank(address).read_cache) {
+    const auto& tag = entry.page;
+    if (entry.valid && tag.stack == address.stack &&
+        tag.die == address.die && tag.plane == address.plane &&
+        tag.block == address.block)
+      entry.valid = false;
+  }
 }
 
 std::uint64_t Simulator::page_key(const PhysicalAddr& address) const {
@@ -326,6 +380,7 @@ std::uint32_t Simulator::block_erase_count(
 }
 
 void Simulator::retire_block(const PhysicalAddr& address) {
+  invalidate_read_cache_block(address);
   auto& block = plane(address).blocks.at(address.block);
   const bool newly_bad = !block.bad;
   if (newly_bad) {
@@ -361,6 +416,7 @@ void Simulator::invalidate_host_page(std::uint64_t logical_addr) {
   const auto paddr = mapping->lookup(lpn);
   if (!paddr) throw std::runtime_error("INVALIDATE_UNMAPPED_LPN");
   mapping->invalidate(lpn);
+  invalidate_read_cache_page(*paddr);
   host_gc_manager_.notify_media_change();
   auto& block = plane(*paddr).blocks.at(paddr->block);
   bitmap_clear(block.valid_bitmap, paddr->page);
@@ -460,11 +516,13 @@ void Simulator::split_request(Request& request) {
         request.size, request.measured);
     request.dlu_data_ready = transfer.completion;
     const auto assembled = system_.dlu_assembler().submit(
-        request.id, channel, request.size, now_, transfer.completion);
+        request.id, channel, request.size, now_, transfer.completion,
+        transfer.start - now_, transfer.completion - transfer.start);
     if (assembled.status != HbfStatus::Pending &&
         assembled.status != HbfStatus::Success) {
       request.failed = true;
       request.status = assembled.status;
+      if (request.measured) stats_.record_dlu_rejection(assembled.status);
       request.complete_time = now_;
       if (request.measured) stats_.record_request(request);
       publish_response(request);
@@ -478,6 +536,8 @@ void Simulator::split_request(Request& request) {
     }
 
     request.dlu_request_ids = assembled.completed->request_ids;
+    if (request.measured)
+      stats_.record_dlu_completed(assembled.completed->timing);
     auto ready = request.dlu_data_ready;
     for (const auto contributor : request.dlu_request_ids)
       ready = std::max(ready, requests_.at(contributor).dlu_data_ready);
@@ -492,13 +552,15 @@ void Simulator::split_request(Request& request) {
     sub.bytes = assembled.completed->size;
     sub.paddr =
         mapper_.prepare_channel_write(assembled.completed->address);
+    invalidate_read_cache_page(sub.paddr);
     sub.arrival_time = now_;
     sub.host_route = request.host_route;
     sub.latency.host_command_wait_ns = request.host_command_wait_ns;
     sub.latency.host_command_service_ns = request.host_command_service_ns;
-    sub.latency.host_data_wait_ns = transfer.start - now_;
+    sub.latency.host_data_wait_ns =
+        assembled.completed->timing.total_h2d_wait_ns;
     sub.latency.host_data_service_ns =
-        transfer.completion - transfer.start;
+        assembled.completed->timing.total_h2d_service_ns;
     ++request.pending_subreqs;
     subrequests_.emplace(sub.id, sub);
     schedule(ready, EventType::SubreqReady, request.id, sub.id);
@@ -535,11 +597,13 @@ void Simulator::split_request(Request& request) {
       sub.latency.host_command_service_ns = request.host_command_service_ns;
       ++request.pending_subreqs;
       if (forwarding.disposition == DluReadDisposition::PendingWrite) {
+        if (request.measured) stats_.record_dlu_pending_read();
         sub.failed = true;
         sub.status = HbfStatus::ReadPendingWrite;
         subrequests_.emplace(sub.id, sub);
         schedule(now_, EventType::SubreqDone, request.id, sub.id);
       } else if (forwarding.disposition == DluReadDisposition::Forwarded) {
+        if (request.measured) stats_.record_dlu_forwarded(bytes);
         const auto host = reserve_host(
             sub.host_route, HostLinkDirection::DeviceToHost,
             std::max(now_, forwarding.ready_at), bytes, request.measured);
@@ -550,8 +614,21 @@ void Simulator::split_request(Request& request) {
       } else {
         if (config_.initialization_mode != InitializationMode::Empty)
           materialize_initialized_page(sub.paddr);
-        subrequests_.emplace(sub.id, sub);
-        schedule(now_, EventType::SubreqReady, request.id, sub.id);
+        if (read_cache_lookup(sub.paddr, now_)) {
+          if (request.measured) stats_.record_read_cache_hit(bytes);
+          const auto fabric = reserve_fabric(
+              sub.paddr, now_, bytes, request.measured);
+          sub.latency.fabric_wait_ns = fabric.start - now_;
+          sub.latency.fabric_service_ns =
+              fabric.completion - fabric.start;
+          subrequests_.emplace(sub.id, sub);
+          schedule(fabric.completion, EventType::ReadCacheDataOutDone,
+                   request.id, sub.id);
+        } else {
+          if (request.measured) stats_.record_read_cache_miss();
+          subrequests_.emplace(sub.id, sub);
+          schedule(now_, EventType::SubreqReady, request.id, sub.id);
+        }
       }
       current += bytes;
       remaining -= bytes;

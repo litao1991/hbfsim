@@ -94,6 +94,18 @@ int main() {
 
   {
     auto value = config();
+    DluAssembler assembler(value);
+    CHECK(assembler.submit(1, {0, 0}, 4096, 0).status ==
+          HbfStatus::Success);
+    const auto replacement = assembler.submit(2, {0, 0}, 64, 50);
+    CHECK(replacement.deadline == 150);
+    CHECK(assembler.expire(100).empty());
+    CHECK(assembler.pending_count() == 1);
+    CHECK(assembler.expire(150).size() == 1);
+  }
+
+  {
+    auto value = config();
     Simulator simulator(value);
     simulator.submit({0, OpType::Write, 0, 4096, 0});
     simulator.submit({0, OpType::Write, 4096, 4096, 0});
@@ -101,12 +113,30 @@ int main() {
     CHECK(simulator.block_erase_count({0, 0, 0, 0, 0}) == 0);
     const auto before = simulator.now();
     simulator.submit({before, OpType::Write, 0, 4096, 0});
+    simulator.run_until(before + 15);
+    CHECK(simulator.block_state({0, 0, 0, 0, 0}) ==
+          BlockState::Erasing);
+    CHECK(simulator.page_state({0, 0, 0, 0, 1}) == PageState::Valid);
     simulator.run();
     CHECK(simulator.block_erase_count({0, 0, 0, 0, 0}) == 1);
     CHECK(simulator.page_state({0, 0, 0, 0, 0}) == PageState::Valid);
     CHECK(simulator.page_state({0, 0, 0, 0, 1}) == PageState::Erased);
     CHECK(simulator.now() >= before + value.erase_ns + value.program_ns);
     CHECK(simulator.responses().back().status == HbfStatus::Success);
+  }
+
+  {
+    auto value = config();
+    value.erase_failure_rate = 1.0;
+    Simulator simulator(value);
+    simulator.submit({0, OpType::Write, 0, 4096, 0});
+    simulator.submit({0, OpType::Write, 4096, 4096, 0});
+    simulator.run();
+    simulator.submit({simulator.now(), OpType::Write, 0, 4096, 0});
+    simulator.run();
+    CHECK(simulator.responses().back().status == HbfStatus::ReducedCapacity);
+    CHECK(simulator.responses().back().protocol_status_code == 0x8);
+    CHECK(simulator.block_state({0, 0, 0, 0, 0}) == BlockState::Bad);
   }
 
 

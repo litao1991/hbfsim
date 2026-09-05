@@ -26,6 +26,14 @@ ProtocolAbstraction parse_protocol_abstraction(const std::string& value) {
   throw std::runtime_error("unknown protocol abstraction: " + value);
 }
 
+ChannelMediaPolicy parse_channel_media_policy(const std::string& value) {
+  const auto normalized = detail::lower(detail::trim(value));
+  if (normalized == "linear") return ChannelMediaPolicy::Linear;
+  if (normalized == "fine_stripe" || normalized == "fine-stripe")
+    return ChannelMediaPolicy::FineStripe;
+  throw std::runtime_error("unknown Channel media mapping policy: " + value);
+}
+
 MappingPolicy parse_mapping(const std::string& value) {
   const auto normalized = detail::lower(value);
   if (normalized == "linear") return MappingPolicy::Linear;
@@ -176,6 +184,25 @@ OpType parse_op(const std::string& value) {
   throw std::runtime_error("unknown operation: " + value);
 }
 
+Config Config::for_profile(SimulationProfile profile) {
+  Config config;
+  config.apply_profile_defaults(profile);
+  return config;
+}
+
+void Config::apply_profile_defaults(SimulationProfile profile) {
+  simulation_profile = profile;
+  const bool research = profile == SimulationProfile::MediaResearch;
+  research_stripe_mapping_enabled = research;
+  research_copy_gc_enabled = research;
+  research_migration_recovery_enabled = research;
+  channel_media_policy = research ? ChannelMediaPolicy::Linear
+                                  : ChannelMediaPolicy::FineStripe;
+  read_cache_enabled = !research;
+  mapping_policy = research ? MappingPolicy::BurstStripe
+                            : MappingPolicy::Linear;
+}
+
 Config Config::from_yaml_file(const std::string& path) {
   std::ifstream input(path);
   if (!input) throw std::runtime_error("cannot open config: " + path);
@@ -203,12 +230,7 @@ Config Config::from_yaml_file(const std::string& path) {
   const auto integer = [](const std::string& v) { return detail::parse_u64(v); };
   const auto time = [](const std::string& v) { return parse_duration_ns(v); };
   if (const auto it = values.find("simulation.profile"); it != values.end()) {
-    config.simulation_profile = parse_simulation_profile(it->second);
-    if (config.simulation_profile != SimulationProfile::MediaResearch) {
-      config.research_stripe_mapping_enabled = false;
-      config.research_copy_gc_enabled = false;
-      config.research_migration_recovery_enabled = false;
-    }
+    config.apply_profile_defaults(parse_simulation_profile(it->second));
   }
   if (const auto it = values.find("protocol.abstraction");
       it != values.end())
@@ -226,11 +248,18 @@ Config Config::from_yaml_file(const std::string& path) {
                     config.hbf_channel_interleave, parse_size);
   detail::assign_if(values, "hbf.page0_auto_erase",
                     config.page0_auto_erase, parse_bool);
+  if (const auto it = values.find("hbf.media_mapping.policy");
+      it != values.end())
+    config.channel_media_policy = parse_channel_media_policy(it->second);
   detail::assign_if(values, "hbf.dlu.size", config.dlu_size, parse_size);
   detail::assign_if(values, "hbf.dlu.max_pending", config.max_pending_dlus,
                     integer);
   detail::assign_if(values, "hbf.dlu.accumulation_timeout_ns",
                     config.dlu_accumulation_timeout_ns, time);
+  detail::assign_if(values, "hbf.read_cache.enabled",
+                    config.read_cache_enabled, parse_bool);
+  detail::assign_if(values, "hbf.read_cache.entries_per_bank",
+                    config.read_cache_entries_per_bank, integer);
   detail::assign_if(values, "axi.ports_per_channel",
                     config.axi_ports_per_channel, integer);
   detail::assign_if(values, "axi.port_interleave",
@@ -241,6 +270,8 @@ Config Config::from_yaml_file(const std::string& path) {
   detail::assign_if(values, "device.stacks", config.stacks, integer);
   detail::assign_if(values, "nand.dies_per_stack", config.dies_per_stack, integer);
   detail::assign_if(values, "nand.planes_per_die", config.planes_per_die, integer);
+  detail::assign_if(values, "nand.banks_per_die", config.banks_per_die,
+                    integer);
   detail::assign_if(values, "nand.blocks_per_plane", config.blocks_per_plane, integer);
   detail::assign_if(values, "nand.pages_per_block", config.pages_per_block, integer);
   detail::assign_if(values, "nand.page_size", config.page_size, parse_size);
@@ -326,7 +357,7 @@ void Config::validate() const {
   if (protocol_abstraction != ProtocolAbstraction::Transaction)
     throw std::runtime_error(
         "protocol.abstraction: flit is reserved for a future release; "
-        "v0.3.5 supports transaction abstraction only");
+        "v0.4.0 supports transaction abstraction only");
   if (hbf_channel_interleave == 0 || axi_ports_per_channel == 0 ||
       axi_port_interleave == 0 ||
       axi_id_count == 0 || axi_max_outstanding_per_id == 0 ||
@@ -335,7 +366,8 @@ void Config::validate() const {
     throw std::runtime_error(
         "HBF Channel, AXI, and DLU limits must be non-zero");
   if (page_size == 0 || stacks == 0 || dies_per_stack == 0 ||
-      planes_per_die == 0 || blocks_per_plane == 0 || pages_per_block == 0 ||
+      planes_per_die == 0 || banks_per_die == 0 || blocks_per_plane == 0 ||
+      pages_per_block == 0 || read_cache_entries_per_bank == 0 ||
       host_channels_per_stack == 0 || ports_per_stack == 0 ||
       max_active_planes_per_die == 0 || max_active_planes_per_stack == 0 ||
       max_multi_plane_width == 0 ||
@@ -367,6 +399,12 @@ void Config::validate() const {
           "Host Channel topology");
     if (dlu_size != 4 * 1024)
       throw std::runtime_error("spec profiles require a 4KiB DLU");
+    if (page_size != dlu_size)
+      throw std::runtime_error(
+          "spec profiles require NAND Page size to match the 4KiB DLU");
+    if (read_cache_entries_per_bank != 2)
+      throw std::runtime_error(
+          "spec profiles require two Read Cache entries per Bank");
     const auto valid_interleave = [](std::uint64_t value) {
       return value >= 64 && value <= 4096 && (value & (value - 1)) == 0;
     };
@@ -389,6 +427,9 @@ void Config::validate() const {
   if (max_active_planes_per_die > planes_per_die ||
       max_active_planes_per_stack > planes_per_stack)
     throw std::runtime_error("active-plane limit exceeds configured topology");
+  if (planes_per_die % banks_per_die != 0)
+    throw std::runtime_error(
+        "nand.banks_per_die must evenly divide planes_per_die");
   if (multi_plane_enabled && max_multi_plane_width > planes_per_die)
     throw std::runtime_error("multi-plane width exceeds planes per die");
   std::uint64_t resolved_stripe_lanes = total_planes;
