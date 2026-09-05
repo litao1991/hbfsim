@@ -1,0 +1,47 @@
+simulation:
+  profile: hbf_v0_7
+protocol:
+  abstraction: transaction
+hbf:
+  channel_count: 4
+  channel_interleave: 4KiB
+  page0_auto_erase: true
+  dlu:
+    size: 4KiB
+    max_pending: 64
+    accumulation_timeout_ns: 1ms
+axi:
+  ports_per_channel: 1
+  port_interleave: 64B
+  id_count: 256
+  max_outstanding_per_id: 16
+research_extensions:
+  stripe_mapping: false
+  copy_gc:
+    enabled: false
+  migration_recovery:
+    enabled: false
+device:
+  stacks: 1
+host_interface:
+  channels_per_stack: 4
+  bandwidth_per_channel: 256GBps
+  fixed_latency_ns: 50
+nand:
+  dies_per_stack: 4
+  planes_per_die: 4
+  blocks_per_plane: 16
+  pages_per_block: 64
+  page_size: 4KiB
+  parallelism:
+    max_active_planes_per_die: 4
+    max_active_planes_per_stack: 16
+internal_fabric:
+  ports_per_stack: 16
+  aggregate_bandwidth: 1TBps
+  port_bandwidth: 64GBps
+  fixed_latency_ns: 20
+mapping:
+  policy: linear
+statistics:
+  output_dir: results/hbf_v0_7_foundation

@@ -392,7 +392,14 @@ void Simulator::issue(std::uint64_t id, SimTime now, bool shared_command) {
   if (sub.op == OpType::Read) {
     if (config_.strict_media_validation &&
         (block.state == BlockState::Free || block.state == BlockState::Bad ||
-         !bitmap_test(block.valid_bitmap, sub.paddr.page)))
+         !bitmap_test(block.valid_bitmap, sub.paddr.page))) {
+      if (config_.simulation_profile != SimulationProfile::MediaResearch) {
+        sub.failed = true;
+        sub.status = HbfStatus::ErasedPageRead;
+        target.busy = false;
+        schedule(now, EventType::SubreqDone, sub.parent_id, sub.id);
+        return;
+      }
       throw std::runtime_error("READ_INVALID_PAGE at plane " +
                                std::to_string(plane_index(sub.paddr)) +
                                ", block " + std::to_string(sub.paddr.block) +
@@ -402,11 +409,22 @@ void Simulator::issue(std::uint64_t id, SimTime now, bool shared_command) {
                                ", valid " +
                                std::to_string(bitmap_test(
                                    block.valid_bitmap, sub.paddr.page)));
+    }
     set_transient_page_state(sub.paddr, PageState::Reading);
   } else if (sub.op == OpType::Erase) {
     if (block.bad || block.state == BlockState::Bad ||
-        block.state == BlockState::Erasing)
+        block.state == BlockState::Erasing) {
+      if (config_.simulation_profile != SimulationProfile::MediaResearch) {
+        sub.failed = true;
+        sub.status = block.bad || block.state == BlockState::Bad
+                         ? HbfStatus::ReducedCapacity
+                         : HbfStatus::DieTemporarilyBlocked;
+        target.busy = false;
+        schedule(now, EventType::SubreqDone, sub.parent_id, sub.id);
+        return;
+      }
       throw std::runtime_error("ERASE_ON_BAD_OR_ERASING_BLOCK");
+    }
     erased_blocks_.insert(block_key(sub.paddr));
     block.state = BlockState::Erasing;
   } else if (block.bad || block.state == BlockState::Bad ||
@@ -450,20 +468,76 @@ void Simulator::start_program(std::uint64_t id, SimTime now,
     throw std::runtime_error("STALE_GENERATION");
   auto& target = plane(sub.paddr);
   auto& block = target.blocks.at(sub.paddr.block);
+  if (target.cached_write == sub.id) target.cached_write.reset();
   if (block.bad || block.state == BlockState::Bad ||
-      block.state == BlockState::Erasing)
+      block.state == BlockState::Erasing) {
+    if (config_.simulation_profile != SimulationProfile::MediaResearch) {
+      sub.failed = true;
+      sub.status = block.bad || block.state == BlockState::Bad
+                       ? HbfStatus::ReducedCapacity
+                       : HbfStatus::DieTemporarilyBlocked;
+      target.busy = false;
+      schedule(now, EventType::SubreqDone, sub.parent_id, sub.id);
+      return;
+    }
     throw std::runtime_error("PROGRAM_ON_BAD_OR_ERASING_BLOCK");
-  if (block.next_program_page != sub.paddr.page)
+  }
+
+  const bool auto_erase =
+      config_.simulation_profile != SimulationProfile::MediaResearch &&
+      config_.page0_auto_erase && sub.paddr.page == 0 &&
+      block.state != BlockState::Free && mapper_.stripe_mapping() == nullptr;
+  if (auto_erase) {
+    sub.page0_auto_erase = true;
+    erased_blocks_.insert(block_key(sub.paddr));
+    if (reliability_.erase_failed(block.erase_count)) {
+      sub.auto_erase_failed = true;
+    } else {
+      block.state = BlockState::Free;
+      block.next_program_page = 0;
+      block.valid_pages = 0;
+      block.invalid_pages = 0;
+      block.valid_bitmap.clear();
+      block.invalid_bitmap.clear();
+      block.failed_bitmap.clear();
+      ++block.erase_count;
+      mapper_.on_erase(sub.paddr);
+      sub.auto_erase_retired =
+          config_.max_erase_cycles != 0 &&
+          block.erase_count >= config_.max_erase_cycles;
+    }
+  }
+
+  if (!sub.auto_erase_failed && !sub.auto_erase_retired &&
+      block.next_program_page != sub.paddr.page) {
+    if (config_.simulation_profile != SimulationProfile::MediaResearch) {
+      sub.failed = true;
+      sub.status = HbfStatus::WriteOrderViolation;
+      target.busy = false;
+      schedule(now, EventType::SubreqDone, sub.parent_id, sub.id);
+      return;
+    }
     throw std::runtime_error("WRITE_ORDER_VIOLATION at plane " +
                              std::to_string(plane_index(sub.paddr)));
-  if (bitmap_test(block.valid_bitmap, sub.paddr.page))
+  }
+  if (!sub.auto_erase_failed && !sub.auto_erase_retired &&
+      bitmap_test(block.valid_bitmap, sub.paddr.page)) {
+    if (config_.simulation_profile != SimulationProfile::MediaResearch) {
+      sub.failed = true;
+      sub.status = HbfStatus::OverlappingAddress;
+      target.busy = false;
+      schedule(now, EventType::SubreqDone, sub.parent_id, sub.id);
+      return;
+    }
     throw std::runtime_error("IN_PLACE_PROGRAM_NOT_ALLOWED at plane " +
                              std::to_string(plane_index(sub.paddr)));
+  }
 
-  if (target.cached_write == sub.id) target.cached_write.reset();
   target.busy = true;
   target.active_subrequest = sub.id;
-  if (block.state == BlockState::Free) block.state = BlockState::Open;
+  if (!sub.auto_erase_failed && !sub.auto_erase_retired &&
+      block.state == BlockState::Free)
+    block.state = BlockState::Open;
   set_transient_page_state(sub.paddr, PageState::Programming);
   claim_command(sub, now, shared_command);
   const auto die_index = static_cast<std::size_t>(sub.paddr.stack) *
@@ -474,7 +548,10 @@ void Simulator::start_program(std::uint64_t id, SimTime now,
   start_array_tracking(sub, now);
   record_queue_depth();
   sub.array_active_since = now;
-  const auto done = now + config_.program_ns;
+  const auto done = now + (sub.page0_auto_erase ? config_.erase_ns : 0) +
+                    ((!sub.auto_erase_failed && !sub.auto_erase_retired)
+                         ? config_.program_ns
+                         : 0);
   sub.array_completion_time = done;
   target.ready_at = done;
   block.ready_at = done;

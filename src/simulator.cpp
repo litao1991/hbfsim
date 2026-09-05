@@ -1,6 +1,7 @@
 #include "hbfsim/core.h"
 
 #include <algorithm>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 
@@ -28,11 +29,12 @@ void bitmap_clear(std::vector<std::uint64_t>& bitmap, std::uint32_t page) {
 
 Simulator::Simulator(Config config)
     : config_(std::move(config)),
-      mapper_(config_),
-      host_router_(config_),
-      reliability_(config_),
-      host_gc_manager_(config_),
-      refresh_manager_(config_) {
+      system_(config_),
+      mapper_(system_.mapper()),
+      host_router_(system_.host_router()),
+      reliability_(system_.reliability()),
+      host_gc_manager_(system_.host_gc_manager()),
+      refresh_manager_(system_.refresh_manager()) {
   config_.validate();
   const auto planes_per_stack =
       static_cast<std::uint64_t>(config_.dies_per_stack) *
@@ -104,27 +106,157 @@ void Simulator::submit(const TraceEntry& entry) {
     return;
   if (entry.timestamp_ns < now_)
     throw std::invalid_argument("cannot submit an event in simulated past");
-  if ((entry.op == OpType::Read || entry.op == OpType::Write) &&
-      entry.size == 0)
-    throw std::invalid_argument("read/write request size must be non-zero");
-  if (entry.op == OpType::Invalidate &&
+  const bool spec_profile =
+      config_.simulation_profile != SimulationProfile::MediaResearch;
+  const auto invalid_size =
+      (entry.op == OpType::Read || entry.op == OpType::Write) &&
+      entry.size == 0;
+  const auto invalid_invalidate =
+      entry.op == OpType::Invalidate &&
       (entry.size == 0 || entry.address % config_.page_size != 0 ||
-       entry.size % config_.page_size != 0))
+       entry.size % config_.page_size != 0);
+  if (!spec_profile && invalid_size)
+    throw std::invalid_argument("read/write request size must be non-zero");
+  if (!spec_profile && invalid_invalidate)
     throw std::invalid_argument(
         "invalidate range must be non-empty and page-aligned");
+
+  const auto request_id = next_request_id_++;
+  const auto reject = [&](HbfStatus status, const std::string& reason) {
+    HbfErrorInfo error;
+    error.logical_address = entry.address;
+    error.reason = reason;
+    auto response = HbfResponse::failure(
+        request_id, status, std::move(error), entry.timestamp_ns);
+    if (spec_profile &&
+        (entry.op == OpType::Read || entry.op == OpType::Write))
+      response.protocol_status_code = hbf_status_code(entry.op, status);
+    responses_.push_back(std::move(response));
+    Request rejected;
+    rejected.id = request_id;
+    rejected.arrival_time = entry.timestamp_ns;
+    rejected.complete_time = entry.timestamp_ns;
+    rejected.op = entry.op;
+    rejected.logical_addr = entry.address;
+    rejected.size = entry.size;
+    rejected.stream_id = entry.stream;
+    rejected.failed = true;
+    rejected.status = status;
+    rejected.measured = streaming_submission_
+                            ? phase_ == SimulationPhase::Measure
+                            : request_id >= config_.warmup_requests;
+    if (rejected.measured) stats_.record_request(rejected);
+    ++submitted_requests_;
+  };
+  if (invalid_size || invalid_invalidate) {
+    reject(HbfStatus::InvalidUserField,
+           invalid_size ? "read/write size must be non-zero"
+                        : "invalidate range must be non-empty and aligned");
+    return;
+  }
+  if (spec_profile &&
+      (entry.op == OpType::Read || entry.op == OpType::Write) &&
+      (entry.address % 64 != 0 || entry.size % 64 != 0)) {
+    reject(HbfStatus::InvalidUserField,
+           "HBF Read/Write transfers must be 64B aligned");
+    return;
+  }
+
+  std::optional<HbfChannelAddress> channel_address;
+  if (spec_profile) {
+    try {
+      channel_address = system_.channels().translate(entry.address);
+      if (entry.size != 0 &&
+          entry.size - 1 >
+              system_.channels().total_capacity() - 1 - entry.address) {
+        reject(HbfStatus::InvalidAddress,
+               "request range exceeds HBF capacity");
+        return;
+      }
+      if (entry.size != 0 &&
+          (entry.op == OpType::Read || entry.op == OpType::Write)) {
+        const auto last = system_.channels().translate(
+            entry.address + entry.size - 1);
+        if (last.channel != channel_address->channel ||
+            last.axi_port != channel_address->axi_port) {
+          reject(HbfStatus::InvalidAddress,
+                 "request crosses an HBF Channel or AXI Port range");
+          return;
+        }
+      }
+    } catch (const std::out_of_range& error) {
+      reject(HbfStatus::InvalidAddress, error.what());
+      return;
+    }
+  }
+
   Request request;
-  request.id = next_request_id_++;
+  request.id = request_id;
   request.arrival_time = entry.timestamp_ns;
   request.op = entry.op;
   request.logical_addr = entry.address;
   request.size = entry.size;
   request.stream_id = entry.stream;
+  if (channel_address) {
+    if (entry.axi_port != std::numeric_limits<std::uint32_t>::max() &&
+        entry.axi_port != channel_address->axi_port) {
+      reject(HbfStatus::InvalidAddress,
+             "address is outside the selected AXI Port range");
+      return;
+    }
+    request.axi = {
+        channel_address->channel,
+        entry.axi_port == std::numeric_limits<std::uint32_t>::max()
+            ? channel_address->axi_port
+            : entry.axi_port,
+        entry.axi_id};
+    const auto status = system_.axi().issue(request.axi, request.id);
+    if (status != HbfStatus::Success) {
+      reject(entry.op == OpType::Write &&
+                     status == HbfStatus::TemporarilyRestricted
+                 ? HbfStatus::DieTemporarilyBlocked
+                 : status,
+             "AXI endpoint rejected request");
+      return;
+    }
+    request.axi_tracked = true;
+  }
   request.measured = streaming_submission_
                          ? phase_ == SimulationPhase::Measure
                          : request.id >= config_.warmup_requests;
   requests_.emplace(request.id, request);
   ++submitted_requests_;
   schedule(entry.timestamp_ns, EventType::HostArrival, request.id);
+}
+
+void Simulator::publish_response(const Request& request) {
+  HbfResponse response;
+  if (request.failed) {
+    HbfErrorInfo error;
+    error.logical_address = request.logical_addr;
+    error.reason = to_string(request.status);
+    response = HbfResponse::failure(
+        request.id,
+        request.status == HbfStatus::Success
+            ? HbfStatus::TemporarilyRestricted
+            : request.status,
+        std::move(error), request.complete_time);
+  } else {
+    response = HbfResponse::success(request.id, request.complete_time,
+                                    request.size);
+  }
+  if (config_.simulation_profile != SimulationProfile::MediaResearch &&
+      (request.op == OpType::Read || request.op == OpType::Write))
+    response.protocol_status_code =
+        hbf_status_code(request.op, response.status);
+  if (!request.axi_tracked) {
+    responses_.push_back(std::move(response));
+    return;
+  }
+  auto released = system_.axi().complete(std::move(response));
+  responses_.insert(responses_.end(),
+                    std::make_move_iterator(released.begin()),
+                    std::make_move_iterator(released.end()));
 }
 
 std::uint32_t Simulator::plane_index(const PhysicalAddr& address) const {
@@ -282,6 +414,7 @@ void Simulator::split_request(Request& request) {
       invalidate_host_page((first_lpn + page) * config_.page_size);
     request.complete_time = now_;
     if (request.measured) stats_.record_request(request);
+    publish_response(request);
     requests_.erase(request.id);
     return;
   }
@@ -314,6 +447,114 @@ void Simulator::split_request(Request& request) {
       }
     } else {
       add_subrequest(address);
+    }
+    return;
+  }
+
+  const bool spec_profile =
+      config_.simulation_profile != SimulationProfile::MediaResearch;
+  if (spec_profile && request.op == OpType::Write) {
+    const auto channel = system_.channels().translate(request.logical_addr);
+    const auto transfer = reserve_host(
+        request.host_route, HostLinkDirection::HostToDevice, now_,
+        request.size, request.measured);
+    request.dlu_data_ready = transfer.completion;
+    const auto assembled = system_.dlu_assembler().submit(
+        request.id, channel, request.size, now_, transfer.completion);
+    if (assembled.status != HbfStatus::Pending &&
+        assembled.status != HbfStatus::Success) {
+      request.failed = true;
+      request.status = assembled.status;
+      request.complete_time = now_;
+      if (request.measured) stats_.record_request(request);
+      publish_response(request);
+      requests_.erase(request.id);
+      return;
+    }
+    if (assembled.status == HbfStatus::Pending) {
+      if (assembled.deadline)
+        schedule(*assembled.deadline, EventType::DluTimeout, 0);
+      return;
+    }
+
+    request.dlu_request_ids = assembled.completed->request_ids;
+    auto ready = request.dlu_data_ready;
+    for (const auto contributor : request.dlu_request_ids)
+      ready = std::max(ready, requests_.at(contributor).dlu_data_ready);
+    const auto global =
+        system_.channels().global_address(assembled.completed->address);
+    SubRequest sub;
+    sub.id = next_subrequest_id_++;
+    sub.parent_id = request.id;
+    sub.op = OpType::Write;
+    sub.source = TransactionSource::User;
+    sub.lpn = global / config_.page_size;
+    sub.bytes = assembled.completed->size;
+    sub.paddr =
+        mapper_.prepare_channel_write(assembled.completed->address);
+    sub.arrival_time = now_;
+    sub.host_route = request.host_route;
+    sub.latency.host_command_wait_ns = request.host_command_wait_ns;
+    sub.latency.host_command_service_ns = request.host_command_service_ns;
+    sub.latency.host_data_wait_ns = transfer.start - now_;
+    sub.latency.host_data_service_ns =
+        transfer.completion - transfer.start;
+    ++request.pending_subreqs;
+    subrequests_.emplace(sub.id, sub);
+    schedule(ready, EventType::SubreqReady, request.id, sub.id);
+    return;
+  }
+
+  if (spec_profile && request.op == OpType::Read) {
+    std::uint64_t current = request.logical_addr;
+    std::uint64_t remaining = request.size;
+    while (remaining > 0) {
+      const auto channel = system_.channels().translate(current);
+      const auto channel_chunk = system_.channels().interleave() -
+                                 current % system_.channels().interleave();
+      const auto port_chunk = system_.channels().axi_port_interleave() -
+                              channel.local_address %
+                                  system_.channels().axi_port_interleave();
+      const auto page_chunk = config_.page_size -
+                              channel.local_address % config_.page_size;
+      const auto bytes = std::min(
+          {remaining, channel_chunk, port_chunk, page_chunk});
+      const auto forwarding =
+          system_.dlu_assembler().lookup(channel, bytes);
+      SubRequest sub;
+      sub.id = next_subrequest_id_++;
+      sub.parent_id = request.id;
+      sub.op = OpType::Read;
+      sub.source = TransactionSource::User;
+      sub.lpn = current / config_.page_size;
+      sub.bytes = bytes;
+      sub.paddr = mapper_.map_channel_read(channel);
+      sub.arrival_time = now_;
+      sub.host_route = host_router_.route(current, sub.paddr);
+      sub.latency.host_command_wait_ns = request.host_command_wait_ns;
+      sub.latency.host_command_service_ns = request.host_command_service_ns;
+      ++request.pending_subreqs;
+      if (forwarding.disposition == DluReadDisposition::PendingWrite) {
+        sub.failed = true;
+        sub.status = HbfStatus::ReadPendingWrite;
+        subrequests_.emplace(sub.id, sub);
+        schedule(now_, EventType::SubreqDone, request.id, sub.id);
+      } else if (forwarding.disposition == DluReadDisposition::Forwarded) {
+        const auto host = reserve_host(
+            sub.host_route, HostLinkDirection::DeviceToHost,
+            std::max(now_, forwarding.ready_at), bytes, request.measured);
+        sub.latency.host_data_wait_ns = host.start - now_;
+        sub.latency.host_data_service_ns = host.completion - host.start;
+        subrequests_.emplace(sub.id, sub);
+        schedule(host.completion, EventType::SubreqDone, request.id, sub.id);
+      } else {
+        if (config_.initialization_mode != InitializationMode::Empty)
+          materialize_initialized_page(sub.paddr);
+        subrequests_.emplace(sub.id, sub);
+        schedule(now_, EventType::SubreqReady, request.id, sub.id);
+      }
+      current += bytes;
+      remaining -= bytes;
     }
     return;
   }

@@ -1,4 +1,4 @@
-# HBFSim v0.3.0 架构设计
+# HBFSim v0.3.5 架构设计
 
 ## 1. 目标与范围
 
@@ -20,23 +20,41 @@ flowchart LR
     C[YAML Config] --> CR[Config Parser]
     TR --> S[Simulator Lifecycle]
     CR --> S
-    S --> M[AddressMapper]
-    S --> HR[HostRouter]
+    CR --> SYS[HbfSystem Composition Root]
+    S --> SYS
+    SYS --> M[AddressMapper]
+    SYS --> HR[HostRouter]
+    SYS --> R[ReliabilityModel]
+    SYS --> MG[HostGcManager / RefreshManager]
     HR --> H[Full-duplex HostInterface]
     S --> F[Base-Die DataFabric]
     S --> Q[Scheduler]
     Q --> N[NAND State and Events]
-    N --> R[ReliabilityModel]
+    N --> R
     N --> ST[StatsCollector / ResourceTracker]
     ST --> O[Summary / Breakdown / Occupancy CSVs]
 ```
 
 仿真是单线程确定性执行：所有动作最终转换为带时间戳的 `Event`，进入最小时间优先队列。相同时间戳使用递增的 `seq` 保持稳定顺序。
 
+### 2.1 Profile 与组件所有权
+
+`simulation.profile` 将兼容的介质研究路径、HBF v0.7 规范导向路径和 AI System
+路径分开。`media_research` 保持历史行为；`hbf_v0_7` 与 `ai_system` 默认关闭
+Stripe Mapping、Copy GC 和 Migration Recovery 等研究扩展。Profile 是模型选择与
+结果解释边界，不等同于“已经实现全部规范”。
+
+`HbfSystem` 是设备模型的唯一组合根，拥有 Mapper、Host Router、Reliability、Host
+GC 与 Refresh 服务。`Simulator` 拥有时间、事件、资源和请求生命周期。v0.3.1 为兼容
+现有事件实现保留指向这些服务的非拥有引用；后续新组件应进入 `HbfSystem`，而不是新增
+`Simulator` 所有权。
+
 ## 3. 源码模块
 
 | 文件 | 职责 |
 |---|---|
+| `src/hbf_system.cpp` | Profile 能力、`HbfResponse` 语义与设备组件组合根 |
+| `src/protocol.cpp` | Channel/AXI 地址域、AXI ID 保序、DLU 聚合与 Pending Read 查询 |
 | `src/config.cpp` | YAML 子集解析、单位解析和配置合法性校验 |
 | `src/trace.cpp` | `IRequestSource` 流式接口、CSV 逐条读取和时间戳校验 |
 | `src/event_queue.cpp` | 确定性事件优先队列 |
@@ -81,7 +99,22 @@ Device planes
 
 `stripe.scope` 可选择全 Device、每 Stack 或自定义连续 Lane 数。默认全 Device，与 v0.2.6 完全兼容。
 
-PPA 包含 `stack/die/plane/block/page/offset/data_port`；独立的 `HostRoute` 包含 `stack/channel`。Host Channel 按逻辑页条带选择，不再由 `data_port` 取模推导。Plane 被展平为全局索引，用于状态数组和利用率统计。
+PPA 包含 `channel/stack/die/plane/block/page/offset/data_port`；独立的 `HostRoute` 包含 Channel、AXI Port 及其 Local Address。Host Channel 不再由 `data_port` 取模推导。Plane 被展平为全局索引，用于状态数组和利用率统计。
+
+在 `hbf_v0_7`/`ai_system` Profile 中，Host Channel 已升级为一级地址和介质所有权域：
+
+```text
+Global Address
+  → Channel interleave
+  → Channel ID + Channel Local Address
+  → AXI Port interleave
+  → AXI Port + Port Local Address
+  → Channel-owned contiguous Plane pool
+```
+
+Channel 与 AXI Port interleave 支持 64B–4KiB 的 2 的幂粒度；每个 Channel 只能配置
+1/2/4 个 AXI Port。每 Stack 的 Plane 数必须能被其 Channel 数整除，确保 Channel 的
+NAND Pool 不跨 Stack，也不会访问其他 Channel 的介质。
 
 每个层次承担不同约束：
 
@@ -93,7 +126,16 @@ PPA 包含 `stack/die/plane/block/page/offset/data_port`；独立的 `HostRoute`
 
 ## 5. 请求与事件模型
 
-Host 请求先转成 `Request`，再按 Page 边界拆成 `SubRequest`。`FlashTransaction` 是该结构的显式语义别名。Erase 和 Refresh 生成一个维护事务；Read/Write 可生成多个 Page 事务。
+Host 请求先转成 `Request`。研究路径按 Page 边界拆成 `SubRequest`；规范路径先校验 64B 对齐以及 Channel/AXI Port 边界，再由 DLU 或 Read 路径形成 Page 事务。`FlashTransaction` 是 `SubRequest` 的显式语义别名。Erase 和 Refresh 生成一个维护事务；Read/Write 可生成多个 Page 事务。
+
+规范 Write 先以 64B 对齐 fragment 进入 `DluAssembler`。每个 Channel 独立限制 Pending
+DLU 数；完整 4KiB 后才生成一个 NAND Program。首个 fragment 启动 timeout 事件，超时
+返回 Write Status `0x5`。Pending DLU 上的 Read 对已覆盖范围直接转发，对未覆盖范围返回
+Read Status `0xA`。写 Page 0 遇到 dirty Block 时执行 Erase+Program 组合操作。
+
+AXI 事务按 `(Channel, Port, ID)` 维护 issue FIFO：同 ID completion 严格保序，不同 ID
+可以乱序释放。这里只建模 AR/AW/W/R/B 事务级顺序、outstanding 和带宽竞争，不模拟
+UCIe PHY/flit 信号。
 
 主要事件如下：
 

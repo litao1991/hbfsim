@@ -25,7 +25,7 @@ ctest --test-dir build --output-on-failure
 CSV 列：
 
 ```text
-timestamp_ns,op,address,size,stream
+timestamp_ns,op,address,size,stream[,axi_id,axi_port]
 ```
 
 | 字段 | 说明 |
@@ -35,8 +35,10 @@ timestamp_ns,op,address,size,stream
 | `address` | 字节地址，支持十进制或 `0x` 十六进制 |
 | `size` | 字节数，支持 `KiB/MiB/GiB/TiB` |
 | `stream` | 可选 stream ID，当前记录但不参与调度 |
+| `axi_id` | 可选 AXI ID；缺省为 0，只在规范 Profile 中参与同 ID completion 保序 |
+| `axi_port` | 可选 AXI Port；缺省时由地址 interleave 推导，显式值必须与推导结果一致 |
 
-Read/Write/Invalidate 的 `size` 必须非零且按 Page 对齐。Invalidate 是 Host-managed 映射的显式逻辑失效控制，不产生 NAND 数据事务；Erase/Refresh 使用地址定位 Block，size 可以为零。Trace 必须按时间戳非递减排列；解析器逐条读取，不把整个文件或全部 HostArrival 事件装入内存。
+`media_research` Profile 中 Read/Write/Invalidate 的 `size` 必须非零且按 Page 对齐；`hbf_v0_7`/`ai_system` Profile 的 Read/Write 地址和长度按 64B 对齐，且单个请求不能跨越 Channel 或 AXI Port 地址域。规范 Write 以 64B fragment 累积成 4KiB DLU。Invalidate 是 Host-managed 映射的显式逻辑失效控制，不产生 NAND 数据事务；Erase/Refresh 使用地址定位 Block，size 可以为零。Trace 必须按时间戳非递减排列；解析器逐条读取，不把整个文件或全部 HostArrival 事件装入内存。
 
 ## 3. 配置参考
 
@@ -44,8 +46,10 @@ Read/Write/Invalidate 的 `size` 必须非零且按 Page 对齐。Invalidate 是
 
 | Key | 含义 |
 |---|---|
+| `simulation.profile` | `media_research/hbf_v0_7/ai_system`；决定兼容研究路径或规范路径 |
 | `simulation.max_requests` | 最大提交请求数；0 表示无限制 |
 | `simulation.warmup_requests` | 前 N 个请求执行并完全排空后进入测量阶段 |
+| `protocol.abstraction` | 当前只支持 `transaction`；`flit` 会被明确拒绝 |
 | `initialization.mode` | `empty/image_loaded/preconditioned`；后两者按需物化读到的有效页 |
 
 ### 3.2 拓扑与主机接口
@@ -58,7 +62,24 @@ Read/Write/Invalidate 的 `size` 必须非零且按 Page 对齐。Invalidate 是
 | `host_interface.fixed_latency_ns` | Host Link 固定传播延迟 |
 | `host_interface.full_duplex` | `true` 时 Command/H2D/D2H 使用独立资源；`false` 时共享串行资源 |
 
-### 3.3 NAND 组织
+### 3.3 HBF Channel、AXI 与 DLU
+
+| Key | 含义 |
+|---|---|
+| `hbf.channel_count` | HBF Channel 总数；0 表示使用 `stacks × channels_per_stack` |
+| `hbf.channel_interleave` | Global Address 到 Channel 的 interleave，支持 64B–4KiB 的 2 的幂 |
+| `hbf.page0_auto_erase` | 在 dirty Block 上写 Page 0 时执行 Erase+Program 组合操作 |
+| `hbf.dlu.size` | DLU 大小；规范 Profile 固定为 4KiB |
+| `hbf.dlu.max_pending` | 每个 Channel 同时存在的 Pending DLU 上限 |
+| `hbf.dlu.accumulation_timeout_ns` | 从首个 fragment 到齐套的最长时间 |
+| `axi.ports_per_channel` | 每 Channel AXI Port 数；规范 Profile 支持 1/2/4 |
+| `axi.port_interleave` | Channel Local Address 到 AXI Port 的 interleave，支持 64B–4KiB 的 2 的幂 |
+| `axi.id_count` | 可使用的 AXI ID 数量 |
+| `axi.max_outstanding_per_id` | 每 `(Channel, Port, ID)` 最大未完成事务数 |
+
+AXI 按 `(Channel, Port, ID)` 保存 issue FIFO：同 ID completion 严格有序，不同 ID 可乱序。Pending DLU 对已覆盖的 Read 范围直接转发；未覆盖范围返回 Read Pending Write。超时、重叠和容量压力通过 `HbfResponse` 状态返回。
+
+### 3.4 NAND 组织
 
 | Key | 含义 |
 |---|---|
@@ -69,7 +90,7 @@ Read/Write/Invalidate 的 `size` 必须非零且按 Page 对齐。Invalidate 是
 | `nand.page_size` | Page 大小 |
 | `nand.strict_media_validation` | 是否拒绝读取未编程 Page |
 
-### 3.4 NAND 时序
+### 3.5 NAND 时序
 
 | Key | 含义 |
 |---|---|
@@ -85,7 +106,7 @@ Read/Write/Invalidate 的 `size` 必须非零且按 Page 对齐。Invalidate 是
 | `nand.timing.cache_program_setup_ns` | Cache Program 准备开销 |
 | `nand.timing.read_retry_ns` | Read Retry 额外间隔 |
 
-### 3.5 并行和高级功能
+### 3.6 并行和高级功能
 
 | Key | 含义 |
 |---|---|
@@ -96,7 +117,7 @@ Read/Write/Invalidate 的 `size` 必须非零且按 Page 对齐。Invalidate 是
 | `nand.features.max_multi_plane_width` | 一个 batch 最大 Plane 数 |
 | `nand.features.cache_program` | 启用一页 Cache Program |
 
-### 3.6 Base-Die Fabric
+### 3.7 Base-Die Fabric
 
 | Key | 含义 |
 |---|---|
@@ -105,7 +126,7 @@ Read/Write/Invalidate 的 `size` 必须非零且按 Page 对齐。Invalidate 是
 | `internal_fabric.port_bandwidth` | 单 DataPort 峰值带宽，不再由总带宽除以端口数隐式计算 |
 | `internal_fabric.fixed_latency_ns` | Fabric 固定传播延迟 |
 
-### 3.7 映射与调度
+### 3.8 映射与调度
 
 | Key | 含义 |
 |---|---|
@@ -128,7 +149,7 @@ Read/Write/Invalidate 的 `size` 必须非零且按 Page 对齐。Invalidate 是
 
 Host-managed Parallelism Group 的有效 Lane 数必须整除全设备 Plane 数，且不能切开 Stack 边界：一个 Group 必须均匀包含在单个 Stack 内，或覆盖整数个完整 Stack。`device` 是兼容默认值；`stack` 的宽度等于每 Stack 的 Die×Plane 数；`custom` 必须显式设置非零 `stripe.lanes`。
 
-### 3.8 Automatic Host GC
+### 3.9 Automatic Host GC
 
 | Key | 含义 |
 |---|---|
@@ -140,7 +161,7 @@ Host-managed Parallelism Group 的有效 Lane 数必须整除全设备 Plane 数
 
 全失效 Victim 直接执行多 Lane Erase，不占用 destination。部分失效 Victim 复用 CopyEngine 搬运有效 Page。当前一条逻辑区间只映射到一个物理条带，因此部分条带整理本身不会净增加 free stripe；若达不到高水位且没有新 Victim，管理器记录 stall，并在介质状态变化前抑制重复尝试。
 
-### 3.9 可靠性
+### 3.10 可靠性
 
 | Key | 含义 |
 |---|---|
@@ -157,7 +178,7 @@ Host-managed Parallelism Group 的有效 Lane 数必须整除全设备 Plane 数
 | `nand.reliability.max_read_retries` | 最大重试次数，不含初次 Read |
 | `nand.reliability.random_seed` | 确定性随机种子 |
 
-### 3.10 Automatic Refresh
+### 3.11 Automatic Refresh
 
 | Key | 含义 |
 |---|---|
@@ -168,7 +189,7 @@ Host-managed Parallelism Group 的有效 Lane 数必须整除全设备 Plane 数
 
 Automatic Refresh 仅支持 `host_managed`，复用 Recovery/GC 的 CopyEngine，但使用独立 `TransactionSource::Refresh` 统计和优先级。
 
-### 3.11 输出
+### 3.12 输出
 
 | Key | 含义 |
 |---|---|

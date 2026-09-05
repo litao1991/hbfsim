@@ -1,11 +1,13 @@
 cmake_minimum_required(VERSION 3.20)
-project(hbfsim VERSION 0.3.0 LANGUAGES CXX)
+project(hbfsim VERSION 0.3.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(hbfsim_core
+  src/hbf_system.cpp
+  src/protocol.cpp
   src/config.cpp
   src/resolved_config.cpp
   src/trace.cpp
@@ -35,6 +37,14 @@ if(BUILD_TESTING)
     add_executable(test_${test_name} tests/test_${test_name}.cpp)
     target_link_libraries(test_${test_name} PRIVATE hbfsim_core)
     add_test(NAME ${test_name} COMMAND test_${test_name})
+  endforeach()
+  foreach(spec_test_name profile response system_boundary channel axi status dlu)
+    add_executable(test_spec_${spec_test_name}
+      tests/spec/test_${spec_test_name}.cpp)
+    target_link_libraries(test_spec_${spec_test_name} PRIVATE hbfsim_core)
+    add_test(NAME spec_${spec_test_name} COMMAND test_spec_${spec_test_name})
+    set_tests_properties(spec_${spec_test_name}
+      PROPERTIES LABELS "spec;compliance")
   endforeach()
   find_package(Python3 COMPONENTS Interpreter)
   if(Python3_Interpreter_FOUND)

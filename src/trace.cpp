@@ -1,5 +1,6 @@
 #include "internal.h"
 
+#include <limits>
 #include <stdexcept>
 
 namespace hbfsim {
@@ -28,7 +29,13 @@ bool CsvTraceSource::next(TraceEntry& entry) {
     TraceEntry parsed{detail::parse_u64(fields[0]), parse_op(fields[1]),
                       detail::parse_u64(fields[2]), parse_size(fields[3]),
                       static_cast<std::uint32_t>(
-                          fields.size() > 4 ? detail::parse_u64(fields[4]) : 0)};
+                          fields.size() > 4 ? detail::parse_u64(fields[4]) : 0),
+                      static_cast<std::uint32_t>(
+                          fields.size() > 5 ? detail::parse_u64(fields[5]) : 0),
+                      static_cast<std::uint32_t>(
+                          fields.size() > 6
+                              ? detail::parse_u64(fields[6])
+                              : std::numeric_limits<std::uint32_t>::max())};
     if (previous_timestamp_ && parsed.timestamp_ns < *previous_timestamp_)
       throw std::runtime_error(path_ + ":" + std::to_string(line_number_) +
                                ": trace timestamps must be nondecreasing");

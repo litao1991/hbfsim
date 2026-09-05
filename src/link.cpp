@@ -36,10 +36,21 @@ LinkResource::Reservation DataFabric::reserve_window(
 
 HostRoute HostRouter::route(std::uint64_t logical_addr,
                             const PhysicalAddr& media_address) const {
+  if (config_.simulation_profile != SimulationProfile::MediaResearch) {
+    const auto address = channels_.translate(logical_addr);
+    return {address.channel / config_.host_channels_per_stack,
+            address.channel % config_.host_channels_per_stack,
+            address.channel, address.local_address, address.axi_port,
+            address.axi_port_local_address};
+  }
   const auto lpn = logical_addr / config_.page_size;
   return {media_address.stack,
           static_cast<std::uint32_t>(
-              lpn % config_.host_channels_per_stack)};
+              lpn % config_.host_channels_per_stack),
+          media_address.stack * config_.host_channels_per_stack +
+              static_cast<std::uint32_t>(
+                  lpn % config_.host_channels_per_stack),
+          logical_addr};
 }
 
 HostInterface::HostInterface(std::uint32_t channels, double bytes_per_ns,

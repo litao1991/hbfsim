@@ -62,7 +62,35 @@ void Config::write_resolved_yaml(const std::string& path) const {
           ? planes_per_stack
           : stripe_scope == StripeScope::Custom ? stripe_lanes
                                                  : total_planes;
-  out << "device:\n  stacks: " << stacks
+  const auto effective_hbf_channels =
+      hbf_channel_count == 0
+          ? static_cast<std::uint64_t>(stacks) * host_channels_per_stack
+          : hbf_channel_count;
+  out << "simulation:\n  profile: " << to_string(simulation_profile)
+      << "\n  max_requests: " << max_requests
+      << "\n  warmup_requests: " << warmup_requests
+      << "\nprotocol:\n  abstraction: "
+      << to_string(protocol_abstraction)
+      << "\nhbf:\n  channel_count: " << hbf_channel_count
+      << "\n  effective_channel_count: " << effective_hbf_channels
+      << "\n  channel_interleave: " << hbf_channel_interleave
+      << "\n  page0_auto_erase: " << boolean(page0_auto_erase)
+      << "\n  dlu:\n    size: " << dlu_size
+      << "\n    max_pending: " << max_pending_dlus
+      << "\n    accumulation_timeout_ns: "
+      << dlu_accumulation_timeout_ns
+      << "\naxi:\n  ports_per_channel: " << axi_ports_per_channel
+      << "\n  port_interleave: " << axi_port_interleave
+      << "\n  id_count: " << axi_id_count
+      << "\n  max_outstanding_per_id: "
+      << axi_max_outstanding_per_id
+      << "\nresearch_extensions:\n  stripe_mapping: "
+      << boolean(research_stripe_mapping_enabled)
+      << "\n  copy_gc:\n    enabled: "
+      << boolean(research_copy_gc_enabled)
+      << "\n  migration_recovery:\n    enabled: "
+      << boolean(research_migration_recovery_enabled)
+      << "\ndevice:\n  stacks: " << stacks
       << "\nhost_interface:\n  channels_per_stack: "
       << host_channels_per_stack
       << "\n  bandwidth_per_channel: " << host_bw_bytes_per_ns
@@ -144,8 +172,6 @@ void Config::write_resolved_yaml(const std::string& path) const {
       << "\n  max_inflight_programs: " << copy_max_inflight_programs
       << "\n  copy_buffer_size: " << copy_buffer_size
       << "\n  prefetch_window_pages: " << copy_prefetch_window_pages
-      << "\nsimulation:\n  max_requests: " << max_requests
-      << "\n  warmup_requests: " << warmup_requests
       << "\nstatistics:\n  queue_depth_sample_interval_ns: "
       << queue_depth_sample_interval_ns
       << "\n  output_dir: " << output_dir << '\n';

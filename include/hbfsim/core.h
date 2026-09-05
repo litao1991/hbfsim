@@ -48,14 +48,59 @@ enum class ReadErrorStatus { Clean, Corrected, Uncorrectable };
 enum class InitializationMode { Empty, ImageLoaded, Preconditioned };
 enum class HostLinkDirection { Command, HostToDevice, DeviceToHost };
 enum class SimulationPhase { Initialize, Warmup, Measure, Drain };
+enum class SimulationProfile { MediaResearch, HbfV07, AiSystem };
+enum class ProtocolAbstraction { Transaction, Flit };
+enum class HbfStatus {
+  Success,
+  InvalidAddress,
+  TemporarilyRestricted,
+  InvalidUserField,
+  OverlappingAddress,
+  MaxPendingDluReached,
+  DluAccumulationTimeout,
+  WriteOrderViolation,
+  ProgramFailure,
+  EraseFailure,
+  UncorrectableEcc,
+  ProgramFailureReplayRequired,
+  CorrectedEccRefreshRequired,
+  UncorrectableEccRefreshRequired,
+  UncorrectableEccRetryRequired,
+  ErasedPageRead,
+  ReadPendingWrite,
+  ReducedCapacity,
+  DieTemporarilyBlocked,
+  Pending,
+};
+enum class RetirementGranularity { Block, Bank, Die, Channel };
 
 std::string to_string(OpType op);
 std::string to_string(TransactionSource source);
+std::string to_string(SimulationProfile profile);
+std::string to_string(ProtocolAbstraction abstraction);
+std::string to_string(HbfStatus status);
+std::uint8_t hbf_status_code(OpType op, HbfStatus status);
 OpType parse_op(const std::string& value);
 std::uint64_t parse_size(const std::string& value);
 double parse_bandwidth_bytes_per_ns(const std::string& value);
 
 struct Config {
+  SimulationProfile simulation_profile = SimulationProfile::MediaResearch;
+  ProtocolAbstraction protocol_abstraction =
+      ProtocolAbstraction::Transaction;
+  bool research_stripe_mapping_enabled = true;
+  bool research_copy_gc_enabled = true;
+  bool research_migration_recovery_enabled = true;
+  std::uint32_t hbf_channel_count = 0;
+  std::uint64_t hbf_channel_interleave = 4 * 1024;
+  std::uint32_t axi_ports_per_channel = 1;
+  std::uint64_t axi_port_interleave = 64;
+  std::uint32_t axi_id_count = 256;
+  std::uint32_t axi_max_outstanding_per_id = 16;
+  std::uint64_t dlu_size = 4 * 1024;
+  std::uint32_t max_pending_dlus = 64;
+  SimTime dlu_accumulation_timeout_ns = 1'000'000;
+  bool page0_auto_erase = true;
   std::uint32_t stacks = 1;
   std::uint32_t dies_per_stack = 16;
   std::uint32_t planes_per_die = 32;
@@ -145,6 +190,161 @@ struct PhysicalAddr {
   std::uint64_t physical_stripe =
       std::numeric_limits<std::uint64_t>::max();
   std::uint32_t generation = 0;
+  std::uint32_t channel = 0;
+};
+
+struct HbfErrorInfo {
+  std::uint64_t logical_address = 0;
+  std::optional<PhysicalAddr> physical_address;
+  std::optional<std::uint32_t> retry_stage;
+  std::optional<RetirementGranularity> retirement_granularity;
+  std::string reason;
+};
+
+struct HbfResponse {
+  std::uint64_t request_id = 0;
+  HbfStatus status = HbfStatus::Success;
+  std::optional<std::uint8_t> protocol_status_code;
+  SimTime completion_time = 0;
+  std::uint64_t bytes_completed = 0;
+  std::optional<HbfErrorInfo> error;
+
+  [[nodiscard]] bool ok() const { return status == HbfStatus::Success; }
+  static HbfResponse success(std::uint64_t request_id,
+                             SimTime completion_time = 0,
+                             std::uint64_t bytes_completed = 0);
+  static HbfResponse failure(std::uint64_t request_id, HbfStatus status,
+                             HbfErrorInfo error,
+                             SimTime completion_time = 0,
+                             std::uint64_t bytes_completed = 0);
+};
+
+struct HbfChannelAddress {
+  std::uint32_t channel = 0;
+  std::uint64_t local_address = 0;
+  std::uint32_t axi_port = 0;
+  std::uint64_t axi_port_local_address = 0;
+};
+
+class HbfChannelDomain {
+ public:
+  explicit HbfChannelDomain(const Config& config);
+  HbfChannelAddress translate(std::uint64_t global_address) const;
+  std::uint64_t global_address(const HbfChannelAddress& address) const;
+  std::uint32_t channel_count() const { return channel_count_; }
+  std::uint64_t channel_capacity() const { return channel_capacity_; }
+  std::uint64_t total_capacity() const { return total_capacity_; }
+  std::uint64_t interleave() const { return interleave_; }
+  std::uint32_t axi_ports_per_channel() const {
+    return axi_ports_per_channel_;
+  }
+  std::uint64_t axi_port_interleave() const {
+    return axi_port_interleave_;
+  }
+
+ private:
+  std::uint32_t channel_count_ = 0;
+  std::uint64_t channel_capacity_ = 0;
+  std::uint64_t total_capacity_ = 0;
+  std::uint64_t interleave_ = 0;
+  std::uint32_t axi_ports_per_channel_ = 0;
+  std::uint64_t axi_port_interleave_ = 0;
+};
+
+struct AxiEndpoint {
+  std::uint32_t channel = 0;
+  std::uint32_t port = 0;
+  std::uint32_t id = 0;
+};
+
+class AxiOrderTracker {
+ public:
+  explicit AxiOrderTracker(const Config& config);
+  HbfStatus issue(const AxiEndpoint& endpoint, std::uint64_t request_id);
+  std::vector<HbfResponse> complete(HbfResponse response);
+  std::size_t outstanding(const AxiEndpoint& endpoint) const;
+  std::size_t total_outstanding() const { return owners_.size(); }
+
+ private:
+  struct EndpointKey {
+    std::uint32_t channel = 0;
+    std::uint32_t port = 0;
+    std::uint32_t id = 0;
+    friend bool operator==(const EndpointKey&, const EndpointKey&) = default;
+  };
+  struct EndpointHash {
+    std::size_t operator()(const EndpointKey& key) const;
+  };
+  std::uint32_t channel_count_ = 0;
+  std::uint32_t ports_per_channel_ = 0;
+  std::uint32_t id_count_ = 0;
+  std::uint32_t max_outstanding_per_id_ = 0;
+  std::unordered_map<EndpointKey, std::deque<std::uint64_t>, EndpointHash>
+      issued_;
+  std::unordered_map<std::uint64_t, EndpointKey> owners_;
+  std::unordered_map<std::uint64_t, HbfResponse> completed_;
+};
+
+struct HbfDlu {
+  HbfChannelAddress address;
+  std::uint64_t size = 0;
+  std::vector<std::uint64_t> request_ids;
+};
+
+struct DluAssemblyResult {
+  HbfStatus status = HbfStatus::Pending;
+  std::optional<HbfDlu> completed;
+  std::optional<SimTime> deadline;
+};
+
+struct ExpiredDlu {
+  HbfChannelAddress address;
+  std::vector<std::uint64_t> request_ids;
+  HbfStatus status = HbfStatus::DluAccumulationTimeout;
+};
+
+enum class DluReadDisposition { NotPending, Forwarded, PendingWrite };
+
+struct DluReadResult {
+  DluReadDisposition disposition = DluReadDisposition::NotPending;
+  HbfStatus status = HbfStatus::Success;
+  SimTime ready_at = 0;
+};
+
+class DluAssembler {
+ public:
+  explicit DluAssembler(const Config& config);
+  DluAssemblyResult submit(std::uint64_t request_id,
+                           const HbfChannelAddress& address,
+                           std::uint64_t bytes, SimTime now,
+                           std::optional<SimTime> data_ready_at = std::nullopt);
+  std::vector<ExpiredDlu> expire(SimTime now);
+  DluReadResult lookup(const HbfChannelAddress& address,
+                       std::uint64_t bytes) const;
+  std::size_t pending_count() const { return pending_.size(); }
+  std::uint64_t dlu_size() const { return dlu_size_; }
+
+ private:
+  struct DluKey {
+    std::uint32_t channel = 0;
+    std::uint64_t local_base = 0;
+    friend bool operator==(const DluKey&, const DluKey&) = default;
+  };
+  struct DluKeyHash {
+    std::size_t operator()(const DluKey& key) const;
+  };
+  struct PendingDlu {
+    SimTime deadline = 0;
+    std::uint64_t covered_bytes = 0;
+    std::vector<std::uint64_t> coverage;
+    std::vector<SimTime> fragment_ready_at;
+    std::vector<std::uint64_t> request_ids;
+  };
+  std::uint64_t dlu_size_ = 0;
+  std::uint32_t max_pending_dlus_ = 0;
+  SimTime timeout_ns_ = 0;
+  std::unordered_map<DluKey, PendingDlu, DluKeyHash> pending_;
+  std::unordered_map<std::uint32_t, std::size_t> pending_per_channel_;
 };
 
 struct StripeId {
@@ -327,6 +527,10 @@ class RefreshManager {
 struct HostRoute {
   std::uint32_t stack = 0;
   std::uint32_t channel = 0;
+  std::uint32_t global_channel = 0;
+  std::uint64_t channel_local_address = 0;
+  std::uint32_t axi_port = 0;
+  std::uint64_t axi_port_local_address = 0;
 };
 
 struct Request {
@@ -336,6 +540,8 @@ struct Request {
   std::uint64_t logical_addr = 0;
   std::uint64_t size = 0;
   std::uint32_t stream_id = 0;
+  SimTime dlu_data_ready = 0;
+  std::vector<std::uint64_t> dlu_request_ids;
   HostRoute host_route;
   std::uint32_t pending_subreqs = 0;
   SimTime complete_time = 0;
@@ -344,6 +550,9 @@ struct Request {
   bool measured = true;
   bool failed = false;
   bool internal = false;
+  bool axi_tracked = false;
+  HbfStatus status = HbfStatus::Success;
+  AxiEndpoint axi;
   TransactionSource source = TransactionSource::User;
 };
 
@@ -384,6 +593,10 @@ struct SubRequest {
   bool suspended = false;
   bool failed = false;
   bool critical = false;
+  bool page0_auto_erase = false;
+  bool auto_erase_failed = false;
+  bool auto_erase_retired = false;
+  HbfStatus status = HbfStatus::Success;
 };
 
 using FlashTransaction = SubRequest;
@@ -394,6 +607,8 @@ struct TraceEntry {
   std::uint64_t address;
   std::uint64_t size;
   std::uint32_t stream;
+  std::uint32_t axi_id = 0;
+  std::uint32_t axi_port = std::numeric_limits<std::uint32_t>::max();
 };
 
 class IRequestSource {
@@ -422,6 +637,8 @@ class AddressMapper {
   PhysicalAddr preview_write(std::uint64_t lpn) const;
   PhysicalAddr map_read(std::uint64_t lpn) const;
   PhysicalAddr prepare_write(std::uint64_t lpn);
+  PhysicalAddr map_channel_read(const HbfChannelAddress& address) const;
+  PhysicalAddr prepare_channel_write(const HbfChannelAddress& address);
   void commit_write(std::uint64_t lpn, const PhysicalAddr& paddr,
                     SimTime now = 0);
   ProgramFailureNotice fail_write(std::uint64_t lpn,
@@ -435,7 +652,9 @@ class AddressMapper {
 
  private:
   PhysicalAddr base_map(std::uint64_t lpn) const;
+  PhysicalAddr base_map_channel(const HbfChannelAddress& address) const;
   const Config& config_;
+  HbfChannelDomain channels_;
   std::unique_ptr<StripeMappingTable> stripes_;
 };
 
@@ -483,12 +702,18 @@ class DataFabric {
 
 class HostRouter {
  public:
-  explicit HostRouter(const Config& config) : config_(config) {}
+  explicit HostRouter(const Config& config)
+      : config_(config), channels_(config) {}
   HostRoute route(std::uint64_t logical_addr,
                   const PhysicalAddr& media_address) const;
+  HbfChannelAddress channel_address(std::uint64_t logical_addr) const {
+    return channels_.translate(logical_addr);
+  }
+  const HbfChannelDomain& channels() const { return channels_; }
 
  private:
   const Config& config_;
+  HbfChannelDomain channels_;
 };
 
 class HostInterface {
@@ -530,6 +755,56 @@ class ReliabilityModel {
   std::uint64_t injected_program_failures_ = 0;
 };
 
+struct HbfSystemCapabilities {
+  bool spec_profile = false;
+  bool ai_system_semantics = false;
+  bool transaction_protocol = true;
+  bool research_stripe_mapping = true;
+  bool research_copy_gc = true;
+  bool research_migration_recovery = true;
+};
+
+// Composition root for the HBF device model. Simulator owns time and events;
+// HbfSystem owns address, routing, reliability, and maintenance services.
+class HbfSystem {
+ public:
+  explicit HbfSystem(const Config& config);
+
+  SimulationProfile profile() const { return profile_; }
+  ProtocolAbstraction protocol_abstraction() const {
+    return protocol_abstraction_;
+  }
+  const HbfSystemCapabilities& capabilities() const { return capabilities_; }
+  AddressMapper& mapper() { return mapper_; }
+  const AddressMapper& mapper() const { return mapper_; }
+  HostRouter& host_router() { return host_router_; }
+  const HostRouter& host_router() const { return host_router_; }
+  const HbfChannelDomain& channels() const { return host_router_.channels(); }
+  AxiOrderTracker& axi() { return axi_; }
+  const AxiOrderTracker& axi() const { return axi_; }
+  DluAssembler& dlu_assembler() { return dlu_assembler_; }
+  const DluAssembler& dlu_assembler() const { return dlu_assembler_; }
+  ReliabilityModel& reliability() { return reliability_; }
+  const ReliabilityModel& reliability() const { return reliability_; }
+  HostGcManager& host_gc_manager() { return host_gc_manager_; }
+  const HostGcManager& host_gc_manager() const { return host_gc_manager_; }
+  RefreshManager& refresh_manager() { return refresh_manager_; }
+  const RefreshManager& refresh_manager() const { return refresh_manager_; }
+
+ private:
+  SimulationProfile profile_ = SimulationProfile::MediaResearch;
+  ProtocolAbstraction protocol_abstraction_ =
+      ProtocolAbstraction::Transaction;
+  HbfSystemCapabilities capabilities_;
+  AddressMapper mapper_;
+  HostRouter host_router_;
+  AxiOrderTracker axi_;
+  DluAssembler dlu_assembler_;
+  ReliabilityModel reliability_;
+  HostGcManager host_gc_manager_;
+  RefreshManager refresh_manager_;
+};
+
 struct BlockMeta {
   BlockState state = BlockState::Free;
   std::uint32_t erase_count = 0;
@@ -569,7 +844,7 @@ struct Plane {
   std::vector<BlockMeta> blocks;
 };
 
-enum class EventType { DispatchWake, RefreshManagerWake,
+enum class EventType { DispatchWake, RefreshManagerWake, DluTimeout,
                        ResourceFabricStart, ResourceFabricEnd,
                        ResourceHostStart, ResourceHostEnd,
                        HostArrival, HostCommandDone, SubreqReady,
@@ -904,6 +1179,9 @@ class Simulator {
   void run(IRequestSource& source);
   void run_until(SimTime until);
   const StatsCollector& stats() const { return stats_; }
+  HbfSystem& system() { return system_; }
+  const HbfSystem& system() const { return system_; }
+  const std::vector<HbfResponse>& responses() const { return responses_; }
   SimTime now() const { return now_; }
   SimulationPhase phase() const { return phase_; }
   PageState page_state(const PhysicalAddr& paddr) const;
@@ -949,6 +1227,7 @@ class Simulator {
                                            SimTime now, std::uint64_t bytes,
                                            bool measured);
   void complete_subrequest(std::uint64_t subrequest_id, SimTime now);
+  void publish_response(const Request& request);
   std::uint32_t plane_index(const PhysicalAddr& paddr) const;
   Plane& plane(const PhysicalAddr& paddr);
   const Plane& plane(const PhysicalAddr& paddr) const;
@@ -1037,11 +1316,14 @@ class Simulator {
   };
 
   Config config_;
-  AddressMapper mapper_;
-  HostRouter host_router_;
-  ReliabilityModel reliability_;
-  HostGcManager host_gc_manager_;
-  RefreshManager refresh_manager_;
+  HbfSystem system_;
+  // Transitional aliases keep the event/scheduler implementation stable while
+  // ownership moves behind HbfSystem's component boundary.
+  AddressMapper& mapper_;
+  HostRouter& host_router_;
+  ReliabilityModel& reliability_;
+  HostGcManager& host_gc_manager_;
+  RefreshManager& refresh_manager_;
   SimTime now_ = 0;
   std::uint64_t next_request_id_ = 0;
   std::uint64_t next_subrequest_id_ = 0;
@@ -1063,6 +1345,7 @@ class Simulator {
   std::unordered_map<std::uint64_t, PageState> transient_page_states_;
   std::unordered_set<std::uint64_t> erased_blocks_;
   std::vector<ProgramFailureNotice> program_failure_notices_;
+  std::vector<HbfResponse> responses_;
   std::unordered_map<std::uint64_t, CopyJob> copy_jobs_;
   std::vector<PendingRecovery> pending_recoveries_;
   std::uint64_t next_copy_job_id_ = 0;

@@ -7,6 +7,25 @@
 namespace hbfsim {
 namespace {
 
+SimulationProfile parse_simulation_profile(const std::string& value) {
+  const auto normalized = detail::lower(detail::trim(value));
+  if (normalized == "media_research" || normalized == "media-research")
+    return SimulationProfile::MediaResearch;
+  if (normalized == "hbf_v0_7" || normalized == "hbf-v0.7" ||
+      normalized == "hbf_v0.7")
+    return SimulationProfile::HbfV07;
+  if (normalized == "ai_system" || normalized == "ai-system")
+    return SimulationProfile::AiSystem;
+  throw std::runtime_error("unknown simulation profile: " + value);
+}
+
+ProtocolAbstraction parse_protocol_abstraction(const std::string& value) {
+  const auto normalized = detail::lower(detail::trim(value));
+  if (normalized == "transaction") return ProtocolAbstraction::Transaction;
+  if (normalized == "flit") return ProtocolAbstraction::Flit;
+  throw std::runtime_error("unknown protocol abstraction: " + value);
+}
+
 MappingPolicy parse_mapping(const std::string& value) {
   const auto normalized = detail::lower(value);
   if (normalized == "linear") return MappingPolicy::Linear;
@@ -183,6 +202,42 @@ Config Config::from_yaml_file(const std::string& path) {
   Config config;
   const auto integer = [](const std::string& v) { return detail::parse_u64(v); };
   const auto time = [](const std::string& v) { return parse_duration_ns(v); };
+  if (const auto it = values.find("simulation.profile"); it != values.end()) {
+    config.simulation_profile = parse_simulation_profile(it->second);
+    if (config.simulation_profile != SimulationProfile::MediaResearch) {
+      config.research_stripe_mapping_enabled = false;
+      config.research_copy_gc_enabled = false;
+      config.research_migration_recovery_enabled = false;
+    }
+  }
+  if (const auto it = values.find("protocol.abstraction");
+      it != values.end())
+    config.protocol_abstraction = parse_protocol_abstraction(it->second);
+  detail::assign_if(values, "research_extensions.stripe_mapping",
+                    config.research_stripe_mapping_enabled, parse_bool);
+  detail::assign_if(values, "research_extensions.copy_gc.enabled",
+                    config.research_copy_gc_enabled, parse_bool);
+  detail::assign_if(values,
+                    "research_extensions.migration_recovery.enabled",
+                    config.research_migration_recovery_enabled, parse_bool);
+  detail::assign_if(values, "hbf.channel_count", config.hbf_channel_count,
+                    integer);
+  detail::assign_if(values, "hbf.channel_interleave",
+                    config.hbf_channel_interleave, parse_size);
+  detail::assign_if(values, "hbf.page0_auto_erase",
+                    config.page0_auto_erase, parse_bool);
+  detail::assign_if(values, "hbf.dlu.size", config.dlu_size, parse_size);
+  detail::assign_if(values, "hbf.dlu.max_pending", config.max_pending_dlus,
+                    integer);
+  detail::assign_if(values, "hbf.dlu.accumulation_timeout_ns",
+                    config.dlu_accumulation_timeout_ns, time);
+  detail::assign_if(values, "axi.ports_per_channel",
+                    config.axi_ports_per_channel, integer);
+  detail::assign_if(values, "axi.port_interleave",
+                    config.axi_port_interleave, parse_size);
+  detail::assign_if(values, "axi.id_count", config.axi_id_count, integer);
+  detail::assign_if(values, "axi.max_outstanding_per_id",
+                    config.axi_max_outstanding_per_id, integer);
   detail::assign_if(values, "device.stacks", config.stacks, integer);
   detail::assign_if(values, "nand.dies_per_stack", config.dies_per_stack, integer);
   detail::assign_if(values, "nand.planes_per_die", config.planes_per_die, integer);
@@ -268,6 +323,17 @@ Config Config::from_yaml_file(const std::string& path) {
 }
 
 void Config::validate() const {
+  if (protocol_abstraction != ProtocolAbstraction::Transaction)
+    throw std::runtime_error(
+        "protocol.abstraction: flit is reserved for a future release; "
+        "v0.3.5 supports transaction abstraction only");
+  if (hbf_channel_interleave == 0 || axi_ports_per_channel == 0 ||
+      axi_port_interleave == 0 ||
+      axi_id_count == 0 || axi_max_outstanding_per_id == 0 ||
+      dlu_size == 0 || max_pending_dlus == 0 ||
+      dlu_accumulation_timeout_ns == 0)
+    throw std::runtime_error(
+        "HBF Channel, AXI, and DLU limits must be non-zero");
   if (page_size == 0 || stacks == 0 || dies_per_stack == 0 ||
       planes_per_die == 0 || blocks_per_plane == 0 || pages_per_block == 0 ||
       host_channels_per_stack == 0 || ports_per_stack == 0 ||
@@ -288,6 +354,38 @@ void Config::validate() const {
       static_cast<std::uint64_t>(stacks) * planes_per_stack;
   if (total_planes > max_u32)
     throw std::runtime_error("configured plane count exceeds simulator address range");
+  const auto total_host_channels =
+      static_cast<std::uint64_t>(stacks) * host_channels_per_stack;
+  if (total_host_channels > max_u32)
+    throw std::runtime_error("configured HBF channel count exceeds range");
+  const auto effective_hbf_channels =
+      hbf_channel_count == 0 ? total_host_channels : hbf_channel_count;
+  if (simulation_profile != SimulationProfile::MediaResearch) {
+    if (effective_hbf_channels != total_host_channels)
+      throw std::runtime_error(
+          "spec profiles require hbf.channel_count to match the configured "
+          "Host Channel topology");
+    if (dlu_size != 4 * 1024)
+      throw std::runtime_error("spec profiles require a 4KiB DLU");
+    const auto valid_interleave = [](std::uint64_t value) {
+      return value >= 64 && value <= 4096 && (value & (value - 1)) == 0;
+    };
+    if (!valid_interleave(hbf_channel_interleave) ||
+        !valid_interleave(axi_port_interleave))
+      throw std::runtime_error(
+          "spec Channel/AXI interleave must be a power of two from 64B "
+          "through 4KiB");
+    if (axi_ports_per_channel != 1 && axi_ports_per_channel != 2 &&
+        axi_ports_per_channel != 4)
+      throw std::runtime_error(
+          "spec profiles support 1, 2, or 4 AXI ports per Channel");
+    if (total_planes % effective_hbf_channels != 0)
+      throw std::runtime_error(
+          "spec profiles require an integral NAND Plane pool per Channel");
+    if (planes_per_stack % host_channels_per_stack != 0)
+      throw std::runtime_error(
+          "spec profiles cannot split a Channel NAND pool across Stacks");
+  }
   if (max_active_planes_per_die > planes_per_die ||
       max_active_planes_per_stack > planes_per_stack)
     throw std::runtime_error("active-plane limit exceeds configured topology");
@@ -333,6 +431,23 @@ void Config::validate() const {
   if (host_gc_enabled && mapping_policy != MappingPolicy::HostManaged)
     throw std::runtime_error(
         "automatic Host GC requires mapping.policy: host_managed");
+  if (mapping_policy == MappingPolicy::HostManaged &&
+      !research_stripe_mapping_enabled)
+    throw std::runtime_error(
+        "host_managed mapping requires "
+        "research_extensions.stripe_mapping: true");
+  if (host_gc_enabled && !research_copy_gc_enabled)
+    throw std::runtime_error(
+        "Host GC requires research_extensions.copy_gc.enabled: true");
+  if (auto_recovery_enabled && !research_migration_recovery_enabled)
+    throw std::runtime_error(
+        "automatic recovery requires "
+        "research_extensions.migration_recovery.enabled: true");
+  if (automatic_refresh_enabled &&
+      !research_migration_recovery_enabled)
+    throw std::runtime_error(
+        "automatic Refresh requires "
+        "research_extensions.migration_recovery.enabled: true");
   if (automatic_refresh_enabled &&
       (mapping_policy != MappingPolicy::HostManaged ||
        retention_time_ns == 0 ||
@@ -349,6 +464,22 @@ void Config::validate() const {
       planes_per_stack * blocks_per_plane * pages_per_block;
   if (static_cast<std::uint64_t>(stacks) > max_u64 / pages_per_stack)
     throw std::runtime_error("configured NAND capacity exceeds simulator address range");
+  const auto total_pages = static_cast<std::uint64_t>(stacks) *
+                           pages_per_stack;
+  if (total_pages > max_u64 / page_size)
+    throw std::runtime_error(
+        "configured NAND byte capacity exceeds simulator address range");
+  if (simulation_profile != SimulationProfile::MediaResearch) {
+    const auto total_bytes = total_pages * page_size;
+    if (effective_hbf_channels >
+        max_u64 / hbf_channel_interleave)
+      throw std::runtime_error("configured HBF interleave exceeds range");
+    const auto channel_span =
+        effective_hbf_channels * hbf_channel_interleave;
+    if (total_bytes % channel_span != 0)
+      throw std::runtime_error(
+          "spec profile capacity must contain complete Channel interleaves");
+  }
   if (mapping_policy == MappingPolicy::BurstStripe) {
     if (burst_size == 0 || burst_size % page_size != 0)
       throw std::runtime_error(

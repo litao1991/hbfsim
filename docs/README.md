@@ -1,6 +1,6 @@
 # HBFSim 设计文档
 
-本目录记录 HBFSim v0.3.0 的架构、模型语义和实验方法。文档以当前代码实现为准。
+本目录记录 HBFSim v0.3.5 的架构、模型语义和实验方法。文档以当前代码实现为准。
 
 ## 文档索引
 
@@ -14,6 +14,11 @@
 - [V0.2.6_SCALABLE_STATS_EXPERIMENTS.md](V0.2.6_SCALABLE_STATS_EXPERIMENTS.md)：在线资源统计、队列采样和可复现实验 Runner。
 - [V0.2.7_MODEL_VALIDATION.md](V0.2.7_MODEL_VALIDATION.md)：扩展性、媒体管理不变量和回归测试组成的发布门禁。
 - [V0.3.0_PARALLELISM_GROUPS.md](V0.3.0_PARALLELISM_GROUPS.md)：可配置条带宽度、地址公式、分配策略和组级故障域。
+- [V0.3.1_SPEC_FOUNDATION.md](V0.3.1_SPEC_FOUNDATION.md)：Spec Profile、研究扩展边界、`HbfSystem` 组合根、`HbfResponse` 与规范测试目录。
+- [V0.3.2_CHANNEL.md](V0.3.2_CHANNEL.md)：Host Channel 地址域、Global→Channel→Local 转换与独立 NAND Pool。
+- [V0.3.3_AXI.md](V0.3.3_AXI.md)：1/2/4 AXI Port、地址交织、outstanding 和 AXI ID completion ordering。
+- [V0.3.4_STATUS.md](V0.3.4_STATUS.md)：Read/Write Status 编码、`HbfResponse` 接入和异常边界。
+- [V0.3.5_DLU.md](V0.3.5_DLU.md)：64B fragment、4KiB DLU、Pending/timeout、Read forwarding 与 Page-0 Auto-Erase。
 
 ## 设计定位
 

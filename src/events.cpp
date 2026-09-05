@@ -64,15 +64,36 @@ void Simulator::complete_subrequest(std::uint64_t id, SimTime now) {
     stats_.record_subrequest(sub);
   auto request_it = requests_.find(parent_id);
   auto& request = request_it->second;
-  request.failed = request.failed || sub.failed;
+  request.failed = request.failed || sub.failed ||
+                   sub.status != HbfStatus::Success;
+  if (sub.status != HbfStatus::Success)
+    request.status = sub.status;
   const bool request_done = --request.pending_subreqs == 0;
   subrequests_.erase(sub_it);
   if (request_done) {
     request.complete_time = now;
     const auto internal = request.internal;
-    if (request.measured && !internal)
-      stats_.record_request(request);
-    requests_.erase(request_it);
+    const auto group = request.dlu_request_ids;
+    const auto failed = request.failed;
+    const auto status = request.status;
+    if (!group.empty()) {
+      for (const auto request_id : group) {
+        auto contributor = requests_.find(request_id);
+        if (contributor == requests_.end()) continue;
+        contributor->second.complete_time = now;
+        contributor->second.failed = failed;
+        contributor->second.status = status;
+        if (contributor->second.measured)
+          stats_.record_request(contributor->second);
+        publish_response(contributor->second);
+        requests_.erase(contributor);
+      }
+    } else {
+      if (request.measured && !internal)
+        stats_.record_request(request);
+      if (!internal) publish_response(request);
+      requests_.erase(request_it);
+    }
     if (internal && copy_job_id)
       handle_copy_completion(*copy_job_id, copy_slot, completed_op,
                              subrequest_failed, now);
@@ -108,11 +129,28 @@ void Simulator::handle(const Event& event) {
       refresh_check_at_ = std::numeric_limits<SimTime>::max();
     return;
   }
+  if (event.type == EventType::DluTimeout) {
+    for (const auto& expired : system_.dlu_assembler().expire(now_)) {
+      for (const auto request_id : expired.request_ids) {
+        const auto request = requests_.find(request_id);
+        if (request == requests_.end()) continue;
+        request->second.complete_time = now_;
+        request->second.failed = true;
+        request->second.status = expired.status;
+        if (request->second.measured)
+          stats_.record_request(request->second);
+        publish_response(request->second);
+        requests_.erase(request);
+      }
+    }
+    return;
+  }
 
   auto& request = requests_.at(event.request_id);
   switch (event.type) {
     case EventType::DispatchWake:
     case EventType::RefreshManagerWake:
+    case EventType::DluTimeout:
     case EventType::ResourceFabricStart:
     case EventType::ResourceFabricEnd:
     case EventType::ResourceHostStart:
@@ -180,10 +218,16 @@ void Simulator::handle(const Event& event) {
         bitmap_clear(block.failed_bitmap, sub.paddr.page);
         if (is_measured(sub.parent_id))
           stats_.record_corrected_read();
+        if (config_.simulation_profile != SimulationProfile::MediaResearch)
+          sub.status = HbfStatus::CorrectedEccRefreshRequired;
       } else if (result.status == ReadErrorStatus::Uncorrectable) {
         bitmap_set(block.failed_bitmap, config_.pages_per_block,
                    sub.paddr.page);
         sub.failed = true;
+        sub.status =
+            config_.simulation_profile != SimulationProfile::MediaResearch
+                ? HbfStatus::UncorrectableEccRetryRequired
+                : HbfStatus::UncorrectableEcc;
         if (is_measured(sub.parent_id))
           stats_.record_uncorrectable_read();
       } else {
@@ -230,7 +274,15 @@ void Simulator::handle(const Event& event) {
       stop_array_tracking(sub, now_);
       sub.latency.array_service_ns += now_ - sub.array_active_since;
       std::optional<ProgramFailureNotice> failure_notice;
-      if (reliability_.program_failed(block.erase_count)) {
+      if (sub.auto_erase_failed || sub.auto_erase_retired) {
+        clear_transient_page_state(sub.paddr);
+        sub.failed = true;
+        sub.status = sub.auto_erase_retired ? HbfStatus::ReducedCapacity
+                                            : HbfStatus::EraseFailure;
+        if (sub.auto_erase_failed && is_measured(sub.parent_id))
+          stats_.record_erase_failure();
+        retire_block(sub.paddr);
+      } else if (reliability_.program_failed(block.erase_count)) {
         clear_transient_page_state(sub.paddr);
         bitmap_set(block.failed_bitmap, config_.pages_per_block,
                    sub.paddr.page);
@@ -246,6 +298,11 @@ void Simulator::handle(const Event& event) {
           program_failure_notices_.push_back(*failure_notice);
         }
         sub.failed = true;
+        sub.status =
+            config_.simulation_profile != SimulationProfile::MediaResearch ||
+                    config_.mapping_policy == MappingPolicy::HostManaged
+                ? HbfStatus::ProgramFailureReplayRequired
+                : HbfStatus::ProgramFailure;
         if (is_measured(sub.parent_id))
           stats_.record_program_failure();
       } else {
@@ -288,6 +345,7 @@ void Simulator::handle(const Event& event) {
       sub.latency.array_service_ns += now_ - sub.array_active_since;
       if (reliability_.erase_failed(block.erase_count)) {
         sub.failed = true;
+        sub.status = HbfStatus::EraseFailure;
         if (is_measured(sub.parent_id)) stats_.record_erase_failure();
         retire_block(sub.paddr);
       } else {

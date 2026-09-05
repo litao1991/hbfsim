@@ -13,6 +13,13 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_TESTS = (
+    "spec_profile",
+    "spec_response",
+    "spec_system_boundary",
+    "spec_channel",
+    "spec_axi",
+    "spec_status",
+    "spec_dlu",
     "model_validation",
     "stripe_mapping",
     "parallelism_group",
@@ -69,9 +76,10 @@ def write_markdown(path: Path, report: dict[str, object]) -> None:
         )
     lines.extend([
         "",
-        "The gate covers plane/request-size scaling, sequential stripe and "
-        "generation invariants, pipelined copy, steady-state Host GC, "
-        "deadline refresh, wear/retirement, resource accounting, and timing.",
+        "The gate covers Spec Profile/response/component boundaries, "
+        "plane/request-size scaling, sequential stripe and generation "
+        "invariants, pipelined copy, steady-state Host GC, deadline refresh, "
+        "wear/retirement, resource accounting, and timing.",
         "",
     ])
     path.write_text("\n".join(lines), encoding="utf-8")
