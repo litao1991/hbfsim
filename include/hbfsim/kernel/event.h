@@ -8,6 +8,7 @@
 namespace hbfsim {
 
 enum class EventType { DispatchWake, RefreshManagerWake, DluTimeout,
+                       BatchReadEmit,
                        ResourceFabricStart, ResourceFabricEnd,
                        ResourceHostStart, ResourceHostEnd,
                        HostArrival, HostCommandDone, SubreqReady,

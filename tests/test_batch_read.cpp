@@ -1,4 +1,5 @@
 #include "hbfsim/hbf_system.h"
+#include "hbfsim/simulator.h"
 
 #include "test_support.h"
 
@@ -18,6 +19,17 @@ hbfsim::Config config_for_batch_read() {
   config.ports_per_stack = 2;
   config.max_active_planes_per_die = 2;
   config.max_active_planes_per_stack = 2;
+  config.initialization_mode = InitializationMode::ImageLoaded;
+  config.read_cache_enabled = false;
+  config.batch_read_enabled = true;
+  config.batch_read_aggregation_window_ns = 100;
+  config.batch_read_max_pages = 2;
+  config.read_ns = 1000;
+  config.host_fixed_latency_ns = 0;
+  config.internal_fixed_latency_ns = 0;
+  config.host_bw_bytes_per_ns = 1000;
+  config.internal_bw_bytes_per_ns = 1000;
+  config.internal_port_bw_bytes_per_ns = 1000;
   config.validate();
   return config;
 }
@@ -53,5 +65,17 @@ int main() {
   subrequest.op = OpType::Read;
   subrequest.read_type = request.read_type;
   CHECK(subrequest.read_type == ReadType::Batch);
+
+  auto batch_config = config_for_batch_read();
+  batch_config.banks_per_die = 1;
+  batch_config.validate();
+  Simulator simulator(batch_config);
+  simulator.submit({0, OpType::Read, 0, 64, 0, 0, 0, true});
+  simulator.submit({0, OpType::Read, 4096, 64, 0, 0, 0, true});
+  simulator.run();
+  CHECK(simulator.responses().size() == 2);
+  CHECK(simulator.stats().batch_read_emissions() == 1);
+  CHECK(simulator.stats().batch_read_pages() == 2);
+  CHECK(simulator.now() >= 2100);
   return 0;
 }

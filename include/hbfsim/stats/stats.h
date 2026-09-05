@@ -102,6 +102,11 @@ class StatsCollector {
                           std::uint64_t refreshes,
                           std::uint64_t active_planes);
   void record_read_retry() { ++read_retries_; }
+  void record_batch_read(std::uint64_t pages, SimTime aggregation_delay_ns) {
+    ++batch_read_emissions_;
+    batch_read_pages_ += pages;
+    batch_read_aggregation_delay_ns_ += aggregation_delay_ns;
+  }
   void record_corrected_read() { ++corrected_reads_; }
   void record_uncorrectable_read() { ++uncorrectable_reads_; }
   void record_program_failure() {
@@ -186,6 +191,8 @@ class StatsCollector {
     return retry_required_requests_;
   }
   std::uint64_t read_cache_hits() const { return read_cache_hits_; }
+  std::uint64_t batch_read_emissions() const { return batch_read_emissions_; }
+  std::uint64_t batch_read_pages() const { return batch_read_pages_; }
   std::uint64_t read_cache_misses() const { return read_cache_misses_; }
   std::uint64_t read_cache_evictions() const {
     return read_cache_evictions_;
@@ -312,6 +319,9 @@ class StatsCollector {
   std::uint64_t read_cache_misses_ = 0;
   std::uint64_t read_cache_evictions_ = 0;
   std::uint64_t read_cache_hit_bytes_ = 0;
+  std::uint64_t batch_read_emissions_ = 0;
+  std::uint64_t batch_read_pages_ = 0;
+  SimTime batch_read_aggregation_delay_ns_ = 0;
   SimTime dlu_total_h2d_wait_ns_ = 0;
   SimTime dlu_total_h2d_service_ns_ = 0;
   LatencyHistogram dlu_assembly_latencies_;

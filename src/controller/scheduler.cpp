@@ -16,6 +16,11 @@ bool bitmap_test(const std::vector<std::uint64_t>& bitmap,
 }  // namespace
 
 void Simulator::enqueue_subrequest(SubRequest& subrequest) {
+  if (config_.batch_read_enabled && subrequest.op == OpType::Read &&
+      subrequest.read_type == ReadType::Batch && !subrequest.batch_released) {
+    hold_batch_read(subrequest, now_);
+    return;
+  }
   subrequest.enqueue_time = now_;
   subrequest.ready_time = now_;
   if (config_.multi_plane_enabled && subrequest.op != OpType::Write)

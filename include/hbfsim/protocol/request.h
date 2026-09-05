@@ -86,6 +86,8 @@ struct SubRequest {
   bool page0_auto_erase = false;
   bool auto_erase_failed = false;
   bool auto_erase_retired = false;
+  bool batch_released = false;
+  bool batch_sense_held = false;
   HbfStatus status = HbfStatus::Success;
 };
 
@@ -99,6 +101,7 @@ struct TraceEntry {
   std::uint32_t stream;
   std::uint32_t axi_id = 0;
   std::uint32_t axi_port = std::numeric_limits<std::uint32_t>::max();
+  bool batch_hint = false;
 };
 
 }  // namespace hbfsim

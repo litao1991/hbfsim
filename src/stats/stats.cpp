@@ -270,6 +270,10 @@ void StatsCollector::write(const std::string& output_dir,
                   ? 0.0
                   : static_cast<double>(read_cache_hits_) /
                         (read_cache_hits_ + read_cache_misses_))
+          << "\nbatch_read_emissions," << batch_read_emissions_
+          << "\nbatch_read_pages," << batch_read_pages_
+          << "\nbatch_read_aggregation_delay_ns,"
+          << batch_read_aggregation_delay_ns_
           << "\nprogram_failures," << program_failures_
           << "\nprogram_failure_notices," << program_failure_notices_
           << "\nerase_failures," << erase_failures_

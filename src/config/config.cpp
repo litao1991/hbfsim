@@ -261,6 +261,12 @@ Config Config::from_yaml_file(const std::string& path) {
                     config.read_cache_enabled, parse_bool);
   detail::assign_if(values, "hbf.read_cache.entries_per_bank",
                     config.read_cache_entries_per_bank, integer);
+  detail::assign_if(values, "hbf.batch_read.enabled",
+                    config.batch_read_enabled, parse_bool);
+  detail::assign_if(values, "hbf.batch_read.aggregation_window_ns",
+                    config.batch_read_aggregation_window_ns, time);
+  detail::assign_if(values, "hbf.batch_read.max_pages",
+                    config.batch_read_max_pages, integer);
   detail::assign_if(values, "axi.ports_per_channel",
                     config.axi_ports_per_channel, integer);
   detail::assign_if(values, "axi.port_interleave",
@@ -369,6 +375,7 @@ void Config::validate() const {
   if (page_size == 0 || stacks == 0 || dies_per_stack == 0 ||
       planes_per_die == 0 || banks_per_die == 0 || blocks_per_plane == 0 ||
       pages_per_block == 0 || read_cache_entries_per_bank == 0 ||
+      batch_read_max_pages == 0 ||
       host_channels_per_stack == 0 || ports_per_stack == 0 ||
       max_active_planes_per_die == 0 || max_active_planes_per_stack == 0 ||
       max_multi_plane_width == 0 ||
@@ -376,6 +383,9 @@ void Config::validate() const {
       host_bw_bytes_per_ns <= 0.0 || internal_bw_bytes_per_ns <= 0.0 ||
       internal_port_bw_bytes_per_ns <= 0.0)
     throw std::runtime_error("invalid zero-valued HBF topology or link");
+  if (batch_read_enabled && batch_read_aggregation_window_ns == 0)
+    throw std::runtime_error(
+        "enabled batch reads require a non-zero aggregation window");
   if (copy_max_inflight_reads == 0 || copy_max_inflight_programs == 0 ||
       copy_prefetch_window_pages == 0 || copy_buffer_size < page_size)
     throw std::runtime_error(

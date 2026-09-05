@@ -12,6 +12,7 @@ void Simulator::finish_program(SubRequest& sub, SimTime now) {
 void Simulator::complete_subrequest(std::uint64_t id, SimTime now) {
   auto sub_it = subrequests_.find(id);
   auto& sub = sub_it->second;
+  complete_batch_sense(sub, now);
   sub.complete_time = now;
   const auto parent_id = sub.parent_id;
   const auto copy_job_id = sub.copy_job_id;
@@ -88,6 +89,10 @@ void Simulator::handle(const Event& event) {
       refresh_check_at_ = std::numeric_limits<SimTime>::max();
     return;
   }
+  if (event.type == EventType::BatchReadEmit) {
+    emit_batch_reads(static_cast<std::uint32_t>(event.subreq_id), now_);
+    return;
+  }
   if (event.type == EventType::DluTimeout) {
     for (const auto& expired : system_.dlu_assembler().expire(now_)) {
       bool measured = false;
@@ -112,6 +117,7 @@ void Simulator::handle(const Event& event) {
   switch (event.type) {
     case EventType::DispatchWake:
     case EventType::RefreshManagerWake:
+    case EventType::BatchReadEmit:
     case EventType::DluTimeout:
     case EventType::ResourceFabricStart:
     case EventType::ResourceFabricEnd:
@@ -196,6 +202,7 @@ void Simulator::handle(const Event& event) {
         if (system_.media().read_cache_fill(sub.paddr, now_) &&
             is_measured(sub.parent_id))
           stats_.record_read_cache_eviction();
+      complete_batch_sense(sub, now_);
       system_.media().clear_transient_page_state(sub.paddr);
       stop_array_tracking(sub, now_);
       sub.latency.array_service_ns += now_ - sub.array_active_since;

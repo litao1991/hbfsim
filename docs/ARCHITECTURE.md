@@ -1,4 +1,4 @@
-# HBFSim v0.5.0 架构设计
+# HBFSim v0.5.1 架构设计
 
 ## 1. 目标与范围
 
@@ -58,6 +58,11 @@ kernel 直接写入。
 v0.5.0 在每个 Bank 建立独立的有序 `BankSenseQueue`。它是 Batch Read 的 Sense
 资源域，不与 command-ready timestamp 或 Read Cache 混用：将来的聚合请求以一个
 Batch entry 进入队列，普通 Single Read 的既有时序则保持不变。
+
+v0.5.1 将 optional trace Batch hint 传至 `Request`/`SubRequest`。启用后，Batch
+cache miss 在每 Bank 的 aggregation window 内收集，按 `max_pages` 划分 batch，
+然后以 `BankSenseQueue` 的 front-only 规则开始 Sense；一个 Sense 完成才释放同
+Bank 下一项。不同 Bank 不会相互阻塞。
 
 ## 3. 源码模块
 

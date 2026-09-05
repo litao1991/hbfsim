@@ -13,6 +13,7 @@
 #include "hbfsim/stats/stats.h"
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <optional>
 #include <unordered_map>
@@ -55,6 +56,10 @@ class Simulator {
   void enqueue_subrequest(SubRequest& subrequest);
   void dispatch_stack(std::uint32_t stack, SimTime now);
   void schedule_dispatch_wake(std::uint32_t stack, SimTime when);
+  void hold_batch_read(SubRequest& subrequest, SimTime now);
+  void emit_batch_reads(std::uint32_t bank, SimTime now);
+  void release_next_batch_read(std::uint32_t bank, SimTime now);
+  void complete_batch_sense(SubRequest& subrequest, SimTime now);
   std::optional<std::uint64_t> choose_next(
       PlaneControllerState& plane, SimTime now) const;
   void issue(std::uint64_t subrequest_id, SimTime now,
@@ -139,6 +144,13 @@ class Simulator {
   std::optional<SimTime> next_trace_arrival_;
   std::unordered_map<std::uint64_t, Request> requests_;
   std::unordered_map<std::uint64_t, SubRequest> subrequests_;
+  struct BatchReadBucket {
+    std::deque<std::uint64_t> pending;
+    PhysicalAddr address;
+    bool has_address = false;
+    SimTime emit_at = std::numeric_limits<SimTime>::max();
+  };
+  std::unordered_map<std::uint32_t, BatchReadBucket> batch_reads_;
   std::vector<ProgramFailureNotice> program_failure_notices_;
   std::vector<HbfResponse> responses_;
   std::array<std::uint64_t, 4> queue_depth_{};

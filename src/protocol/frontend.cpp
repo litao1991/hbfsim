@@ -33,6 +33,7 @@ FrontendAdmission ProtocolFrontend::admit(const TraceEntry& entry,
   request.id = request_id;
   request.arrival_time = entry.timestamp_ns;
   request.op = entry.op;
+  request.read_type = entry.batch_hint ? ReadType::Batch : ReadType::Single;
   request.logical_addr = entry.address;
   request.size = entry.size;
   request.stream_id = entry.stream;

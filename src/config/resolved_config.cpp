@@ -87,6 +87,9 @@ void Config::write_resolved_yaml(const std::string& path) const {
       << channel_mapping_name(channel_media_policy)
       << "\n  read_cache:\n    enabled: " << boolean(read_cache_enabled)
       << "\n    entries_per_bank: " << read_cache_entries_per_bank
+      << "\n  batch_read:\n    enabled: " << boolean(batch_read_enabled)
+      << "\n    aggregation_window_ns: " << batch_read_aggregation_window_ns
+      << "\n    max_pages: " << batch_read_max_pages
       << "\n  dlu:\n    size: " << dlu_size
       << "\n    max_pending: " << max_pending_dlus
       << "\n    accumulation_timeout_ns: "

@@ -46,6 +46,73 @@ void Simulator::schedule_dispatch_wake(std::uint32_t stack, SimTime when) {
   schedule(when, EventType::DispatchWake, 0, stack);
 }
 
+void Simulator::hold_batch_read(SubRequest& subrequest, SimTime now) {
+  const auto bank = system_.topology().flat_bank(subrequest.paddr);
+  auto& bucket = batch_reads_[bank];
+  if (!bucket.has_address) {
+    bucket.address = subrequest.paddr;
+    bucket.has_address = true;
+  }
+  bucket.pending.push_back(subrequest.id);
+  if (bucket.emit_at != std::numeric_limits<SimTime>::max()) return;
+  bucket.emit_at = now + config_.batch_read_aggregation_window_ns;
+  schedule(bucket.emit_at, EventType::BatchReadEmit, 0, bank);
+}
+
+void Simulator::emit_batch_reads(std::uint32_t bank, SimTime now) {
+  const auto found = batch_reads_.find(bank);
+  if (found == batch_reads_.end()) return;
+  auto& bucket = found->second;
+  if (bucket.emit_at != now) return;
+  bucket.emit_at = std::numeric_limits<SimTime>::max();
+  if (bucket.pending.empty()) return;
+
+  const auto first_id = bucket.pending.front();
+  const auto address = subrequests_.at(first_id).paddr;
+  auto& sense = system_.media().sense_queue(address);
+  const bool idle = sense.empty();
+  const auto count = std::min<std::size_t>(
+      bucket.pending.size(), config_.batch_read_max_pages);
+  SimTime accumulated_delay = 0;
+  for (std::size_t page = 0; page < count; ++page) {
+    const auto id = bucket.pending.front();
+    bucket.pending.pop_front();
+    auto& subrequest = subrequests_.at(id);
+    sense.enqueue(id);
+    accumulated_delay += now - subrequest.arrival_time;
+  }
+  if (is_measured(subrequests_.at(first_id).parent_id))
+    stats_.record_batch_read(count, accumulated_delay);
+  if (idle) release_next_batch_read(bank, now);
+  if (!bucket.pending.empty()) {
+    bucket.emit_at = now + config_.batch_read_aggregation_window_ns;
+    schedule(bucket.emit_at, EventType::BatchReadEmit, 0, bank);
+  }
+}
+
+void Simulator::release_next_batch_read(std::uint32_t bank, SimTime now) {
+  const auto found = batch_reads_.find(bank);
+  if (found == batch_reads_.end()) return;
+  auto& bucket = found->second;
+  if (!bucket.has_address) return;
+  auto& sense = system_.media().sense_queue(bucket.address);
+  if (sense.empty()) return;
+  auto& subrequest = subrequests_.at(sense.front());
+  if (subrequest.batch_released) return;
+  subrequest.batch_released = true;
+  subrequest.batch_sense_held = true;
+  schedule(now, EventType::SubreqReady, subrequest.parent_id, subrequest.id);
+}
+
+void Simulator::complete_batch_sense(SubRequest& subrequest, SimTime now) {
+  if (!subrequest.batch_sense_held) return;
+  const auto bank = system_.topology().flat_bank(subrequest.paddr);
+  auto& sense = system_.media().sense_queue(subrequest.paddr);
+  sense.pop_front(subrequest.id);
+  subrequest.batch_sense_held = false;
+  release_next_batch_read(bank, now);
+}
+
 void Simulator::submit(const TraceEntry& entry) {
   if (config_.max_requests &&
       submitted_requests_ >= config_.max_requests)
@@ -317,6 +384,7 @@ void Simulator::split_request(Request& request) {
       sub.id = next_subrequest_id_++;
       sub.parent_id = request.id;
       sub.op = OpType::Read;
+      sub.read_type = request.read_type;
       sub.source = TransactionSource::User;
       sub.lpn = current / config_.page_size;
       sub.bytes = bytes;
@@ -384,6 +452,7 @@ void Simulator::split_request(Request& request) {
     sub.id = next_subrequest_id_++;
     sub.parent_id = request.id;
     sub.op = request.op;
+    sub.read_type = request.read_type;
     sub.source = TransactionSource::User;
     sub.lpn = lpn;
     sub.bytes = bytes;

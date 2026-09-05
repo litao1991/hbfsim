@@ -1,6 +1,6 @@
 # HBFSim 设计文档
 
-本目录记录 HBFSim v0.5.0 的架构、模型语义和实验方法。文档以当前代码实现为准。
+本目录记录 HBFSim v0.5.1 的架构、模型语义和实验方法。文档以当前代码实现为准。
 
 ## 文档索引
 
@@ -28,6 +28,7 @@
 - [V0.4.2_CONTROLLER_EXECUTION_STATE.md](V0.4.2_CONTROLLER_EXECUTION_STATE.md)：Controller execution state ownership 迁移。
 - [V0.4.3_MEDIA_CONTROLLER_BOUNDARY.md](V0.4.3_MEDIA_CONTROLLER_BOUNDARY.md)：Plane media/controller 状态拆分与 NAND 状态转换边界。
 - [V0.5.0_BATCH_READ_FOUNDATION.md](V0.5.0_BATCH_READ_FOUNDATION.md)：ReadType、Bank Sense queue 与 Batch Read 资源域。
+- [V0.5.1_BATCH_READ_PROTOCOL.md](V0.5.1_BATCH_READ_PROTOCOL.md)：Batch hint、聚合窗口、边界、批量发射与统计。
 
 ## 设计定位
 
