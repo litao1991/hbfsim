@@ -1,4 +1,4 @@
-# HBFSim v0.2.3 架构设计
+# HBFSim v0.2.6 架构设计
 
 ## 1. 目标与范围
 
@@ -27,7 +27,7 @@ flowchart LR
     S --> Q[Scheduler]
     Q --> N[NAND State and Events]
     N --> R[ReliabilityModel]
-    N --> ST[StatsCollector]
+    N --> ST[StatsCollector / ResourceTracker]
     ST --> O[Summary / Breakdown / Occupancy CSVs]
 ```
 
@@ -43,13 +43,16 @@ flowchart LR
 | `src/mapper.cpp` | Mapping policy 选择以及 Simulator 到条带映射的适配 |
 | `src/stripe_mapping.cpp` | Host-managed 条带分配、隐式双向映射、位图、generation 和原子 remap |
 | `src/host_gc.cpp` | Host GC 水位控制、确定性 Victim 选择、无可回收空间抑制和自动任务准入 |
-| `src/copy_engine.cpp` | Recovery/Host GC 流水 Copy、Host replay、缓冲区 credit、重试、提交和源条带清理 |
+| `src/refresh_manager.cpp` | Retention Deadline 扫描、Refresh 任务准入和定时唤醒 |
+| `src/copy_engine.cpp` | Recovery/Host GC/Refresh 流水 Copy、Host replay、缓冲区 credit、重试、提交和源条带清理 |
 | `src/link.cpp` | 独立 Host 路由、全双工 HostInterface、显式端口/总带宽 DataFabric |
-| `src/reliability.cpp` | Program failure、Poisson 位错误、ECC 与 Retry 抽样 |
+| `src/reliability.cpp` | erase_count 感知的 Program/Erase failure、Poisson 位错误、ECC 与 Retry 抽样 |
+| `src/resource_tracker.cpp` | 在线 Array/Fabric/Host 占用、重叠和并发度面积累计 |
+| `src/resolved_config.cpp` | 将所有默认值和最终配置序列化为 resolved YAML |
 | `src/scheduler.cpp` | 来源感知队列、优先级与 aging、ready 判定、Multi-plane、Cache、Suspend/Resume |
 | `src/events.cpp` | 完成事件、Page/Block 状态迁移、失败处理与统计更新 |
 | `src/simulator.cpp` | 对象构造、请求拆分、资源连接、事件循环和状态查询 |
-| `src/stats.cpp` | 固定内存分位数、延迟分解、队列时序和资源占用输出 |
+| `src/stats.cpp` | 固定内存分位数、延迟分解、采样队列和资源占用输出 |
 
 公共数据结构和接口集中在 `include/hbfsim/core.h`。
 
@@ -135,7 +138,7 @@ Read 阵列阶段结束后释放 Die/Stack active-plane slot，但 Plane 的数�
 
 基本策略：
 
-1. 默认优先级为 Critical Recovery、User Read、Recovery、User/Mapping、Maintenance、GC；
+1. 默认优先级为 Critical Recovery、User Read、Recovery、User/Mapping、Maintenance/Refresh、GC；
 2. 普通非 GC 写等待超过 `write_starvation_ns` 后获得最高仲裁级别；
 3. 任意来源等待超过 `source_aging_ns` 后获得最高仲裁级别，避免后台饥饿；
 4. 连续读取达到 `max_consecutive_reads` 后提升非 Read 请求；
@@ -193,6 +196,8 @@ Program/Erase active
 - 已完成 Request/SubRequest 会从活动表删除；
 - `CsvTraceSource` 仅保留下一条记录，事件队列只包含到达或在途事件；
 - 延迟分位数使用固定大小对数直方图，不保存全部延迟样本；
+- ResourceTracker 在事件时间线上累计 active-count area，不保存操作区间；常驻空间由 Stack/Die/Plane/Port/Channel 数量决定；
+- Queue Depth 按 `queue_depth_sample_interval_ns` 限频，并总是保留最终状态；
 - 该设计避免为完整设备容量创建重量级 Page 对象。
 
 生产执行路径按 `INITIALIZE → WARMUP → MEASURE → DRAIN` 推进。Warmup 请求完成后才读取 Measurement 的第一条 trace；若原始时间戳早于 Warmup 完成时间，Measurement 整体平移，保持请求间隔不变。
@@ -219,6 +224,8 @@ v0.2 不采用传统逐 Page Reverse Mapping，而是在上层保证逻辑地址
 - destination Program Failure 后 abort、重新分配和有限次数重试；
 - Copy 完成后的原子 remap 与 source 多 Lane Erase；
 - Recovery/GC 分来源流量、延迟、完成状态和写放大统计。
+- Retention Deadline、RefreshManager 和复用同一 CopyEngine 的 Automatic Refresh；
+- erase_count 驱动的 RBER/Program/Erase Failure、Block/Stripe Retirement 和容量降级统计。
 
 Program Failure 和 GC 均由 Host policy 发起数据 Copy。`auto_recovery_enabled` 表示仿真 Host 收到失败通知后自动执行既定恢复策略；GC 既可由 Host 通过 `start_host_gc(logical_addr)` 显式选择 victim，也可由 `HostGcManager` 在 free stripe 到达低水位时自动选择。目标条带完成并 Seal 之前，旧条带保持 ACTIVE；只有 `REMAP_COMMIT` 能原子切换权威映射。完整设计见 [HOST_MANAGED_STRIPE_MAPPING.md](HOST_MANAGED_STRIPE_MAPPING.md)。
 
@@ -226,7 +233,6 @@ Program Failure 和 GC 均由 Host policy 发起数据 Copy。`auto_recovery_ena
 
 建议后续按以下边界扩展：
 
-- Automatic Refresh：复用 CopyEngine，但由 retention deadline 和 Host policy 触发；
 - Wear leveling：使用 `erase_count` 驱动 block 选择；
 - Retention/Read disturb：在 ReliabilityModel 中根据时间和读次数动态计算 RBER；
 - Thermal：根据 Stack 功耗状态动态缩放时序；
@@ -240,4 +246,4 @@ Program Failure 和 GC 均由 Host policy 发起数据 Copy。`auto_recovery_ena
 - ECC 只反映纠错能力和延迟结果，不模拟编码器面积与能耗；
 - Suspend/Resume 不模拟模拟电压恢复细节；
 - `tCCS/tADL/tWHR` 是资源可用时间约束，不是引脚波形仿真。
-- 条带级映射、Recovery、显式/水位触发 Host GC 和流水 CopyEngine 已进入 v0.2.3；Automatic Refresh、完整 extent/sparse fallback、cost-benefit/age/wear-aware Victim 策略和实验元数据仍未实现。
+- 条带级映射、Recovery、Host GC、Automatic Refresh、磨损/退休、在线统计和实验元数据已进入 v0.2.6；完整 extent/sparse Host 写入 fallback、Wear Leveling、温度/读扰模型和 cost-benefit Victim 策略仍未实现。

@@ -88,13 +88,8 @@ void StatsCollector::set_topology(std::uint32_t stacks,
   planes_per_die_ = planes_per_die;
   ports_per_stack_ = ports_per_stack;
   host_channels_per_stack_ = host_channels_per_stack;
-  stack_array_intervals_.resize(stacks);
-  stack_fabric_intervals_.resize(stacks);
-  stack_host_intervals_.resize(stacks);
-  die_intervals_.resize(static_cast<std::size_t>(stacks) * dies_per_stack);
-  port_intervals_.resize(static_cast<std::size_t>(stacks) * ports_per_stack);
-  host_channel_intervals_.resize(
-      static_cast<std::size_t>(stacks) * host_channels_per_stack);
+  resources_.configure(stacks, dies_per_stack, planes_per_die,
+                       ports_per_stack, host_channels_per_stack);
 }
 
 void StatsCollector::record_request(const Request& request) {
@@ -184,39 +179,6 @@ std::uint64_t StatsCollector::source_bytes(TransactionSource source,
   return it == source_bytes_.end() ? 0 : it->second;
 }
 
-void StatsCollector::record_array_issue(std::uint32_t stack,
-                                        std::uint32_t die,
-                                        std::uint32_t plane,
-                                        SimTime start, SimTime end) {
-  if (end <= start) return;
-  plane_busy_ns_[plane] += end - start;
-  stack_array_intervals_.at(stack).push_back({start, end});
-  const auto die_index = static_cast<std::size_t>(stack) * dies_per_stack_ + die;
-  die_intervals_.at(die_index).push_back({start, end});
-}
-
-void StatsCollector::record_fabric_transfer(std::uint32_t stack,
-                                            std::uint32_t port,
-                                            SimTime start, SimTime end) {
-  if (end <= start) return;
-  stack_fabric_intervals_.at(stack).push_back({start, end});
-  const auto index = static_cast<std::size_t>(stack) * ports_per_stack_ +
-                     port % ports_per_stack_;
-  port_intervals_.at(index).push_back({start, end});
-}
-
-void StatsCollector::record_host_transfer(std::uint32_t stack,
-                                          std::uint32_t channel,
-                                          HostLinkDirection,
-                                          SimTime start, SimTime end) {
-  if (end <= start) return;
-  stack_host_intervals_.at(stack).push_back({start, end});
-  const auto index = static_cast<std::size_t>(stack) *
-                         host_channels_per_stack_ +
-                     channel % host_channels_per_stack_;
-  host_channel_intervals_.at(index).push_back({start, end});
-}
-
 void StatsCollector::record_queue_depth(SimTime time, std::uint64_t reads,
                                         std::uint64_t writes,
                                         std::uint64_t erases,
@@ -224,10 +186,14 @@ void StatsCollector::record_queue_depth(SimTime time, std::uint64_t reads,
                                         std::uint64_t active_planes) {
   QueueDepthSample sample{time, reads, writes, erases, refreshes,
                           active_planes};
+  latest_queue_depth_ = sample;
   if (!queue_depth_samples_.empty() &&
       queue_depth_samples_.back().time == time)
     queue_depth_samples_.back() = sample;
-  else
+  else if (queue_depth_samples_.empty() ||
+           queue_depth_sample_interval_ns_ == 0 ||
+           time - queue_depth_samples_.back().time >=
+               queue_depth_sample_interval_ns_)
     queue_depth_samples_.push_back(sample);
 }
 
@@ -250,6 +216,9 @@ void StatsCollector::write(const std::string& output_dir,
       ? std::max<SimTime>(1, last_completion_ - *first_arrival_)
       : std::max<SimTime>(1, makespan);
   const double seconds = static_cast<double>(measurement_ns) / 1e9;
+  const SimTime resource_measurement_ns = first_arrival_
+      ? std::max<SimTime>(1, makespan - *first_arrival_)
+      : std::max<SimTime>(1, makespan);
   summary << "metric,value\ncompleted_requests," << completed_requests_
           << "\nread_requests," << read_requests_
           << "\nwrite_requests," << write_requests_
@@ -335,6 +304,8 @@ void StatsCollector::write(const std::string& output_dir,
           << "\nread_retries," << read_retries_
           << "\nmakespan_ns," << makespan
           << "\nmeasurement_duration_ns," << measurement_ns
+          << "\nresource_measurement_duration_ns,"
+          << resource_measurement_ns
           << "\nmean_latency_ns," << mean_latency_ns()
           << "\np50_latency_ns," << percentile_latency_ns(0.50)
           << "\np95_latency_ns," << percentile_latency_ns(0.95)
@@ -370,10 +341,9 @@ void StatsCollector::write(const std::string& output_dir,
                        "plane_utilization.csv");
   planes << "plane,busy_ns,utilization\n";
   for (std::uint32_t plane = 0; plane < total_planes; ++plane) {
-    const auto it = plane_busy_ns_.find(plane);
-    const SimTime busy = it == plane_busy_ns_.end() ? 0 : it->second;
+    const auto busy = resources_.plane_busy(plane, makespan);
     planes << plane << ',' << busy << ','
-           << static_cast<double>(busy) / measurement_ns << '\n';
+           << static_cast<double>(busy) / resource_measurement_ns << '\n';
   }
 
   std::ofstream breakdown(std::filesystem::path(output_dir) /
@@ -429,68 +399,7 @@ void StatsCollector::write(const std::string& output_dir,
                      << average(total.fabric_service_ns) << '\n';
   }
 
-  const SimTime window_start = first_arrival_.value_or(0);
-  const SimTime window_end = first_arrival_ ? last_completion_ : makespan;
-  const auto merge = [window_start, window_end](const auto& intervals) {
-    std::vector<std::pair<SimTime, SimTime>> clipped;
-    for (const auto& interval : intervals) {
-      const auto start = std::max(interval.start, window_start);
-      const auto end = std::min(interval.end, window_end);
-      if (end > start) clipped.emplace_back(start, end);
-    }
-    std::sort(clipped.begin(), clipped.end());
-    std::vector<std::pair<SimTime, SimTime>> merged;
-    for (const auto& interval : clipped) {
-      if (merged.empty() || interval.first > merged.back().second)
-        merged.push_back(interval);
-      else
-        merged.back().second = std::max(merged.back().second,
-                                        interval.second);
-    }
-    return merged;
-  };
-  const auto duration = [](const auto& intervals) {
-    SimTime total = 0;
-    for (const auto& interval : intervals)
-      total += interval.second - interval.first;
-    return total;
-  };
-  const auto overlap_duration = [](const auto& left, const auto& right) {
-    SimTime total = 0;
-    std::size_t i = 0;
-    std::size_t j = 0;
-    while (i < left.size() && j < right.size()) {
-      const auto start = std::max(left[i].first, right[j].first);
-      const auto end = std::min(left[i].second, right[j].second);
-      if (end > start) total += end - start;
-      if (left[i].second < right[j].second)
-        ++i;
-      else
-        ++j;
-    }
-    return total;
-  };
-  const auto max_concurrency = [window_start, window_end](const auto& raw) {
-    std::vector<std::pair<SimTime, int>> changes;
-    for (const auto& interval : raw) {
-      const auto start = std::max(interval.start, window_start);
-      const auto end = std::min(interval.end, window_end);
-      if (end > start) {
-        changes.emplace_back(start, 1);
-        changes.emplace_back(end, -1);
-      }
-    }
-    std::sort(changes.begin(), changes.end(), [](const auto& a, const auto& b) {
-      return a.first != b.first ? a.first < b.first : a.second < b.second;
-    });
-    int active = 0;
-    int maximum = 0;
-    for (const auto& [_, delta] : changes) {
-      active += delta;
-      maximum = std::max(maximum, active);
-    }
-    return maximum;
-  };
+  const SimTime window_end = makespan;
 
   std::ofstream resources(std::filesystem::path(output_dir) /
                           "resource_utilization.csv");
@@ -498,32 +407,27 @@ void StatsCollector::write(const std::string& output_dir,
                "array_utilization,fabric_utilization,host_utilization,"
                "avg_active_planes,max_active_planes\n";
   for (std::uint32_t stack = 0; stack < stacks_; ++stack) {
-    const auto arrays = merge(stack_array_intervals_.at(stack));
-    const auto fabric = merge(stack_fabric_intervals_.at(stack));
-    const auto host = merge(stack_host_intervals_.at(stack));
-    const auto array_ns = duration(arrays);
-    const auto fabric_ns = duration(fabric);
-    const auto host_ns = duration(host);
-    const auto overlap_ns = overlap_duration(arrays, fabric);
+    const auto array_ns = resources_.array_busy(stack, window_end);
+    const auto fabric_ns = resources_.fabric_busy(stack, window_end);
+    const auto host_ns = resources_.host_busy(stack, window_end);
+    const auto overlap_ns =
+        resources_.array_fabric_overlap(stack, window_end);
     const auto union_ns = array_ns + fabric_ns - overlap_ns;
-    SimTime plane_sum = 0;
-    const auto first_plane = static_cast<std::uint64_t>(stack) *
-                             dies_per_stack_ * planes_per_die_;
-    const auto end_plane = first_plane +
-                           static_cast<std::uint64_t>(dies_per_stack_) *
-                               planes_per_die_;
-    for (auto plane = first_plane; plane < end_plane; ++plane) {
-      const auto it = plane_busy_ns_.find(static_cast<std::uint32_t>(plane));
-      if (it != plane_busy_ns_.end()) plane_sum += it->second;
-    }
     resources << stack << ',' << array_ns - overlap_ns << ','
               << fabric_ns - overlap_ns << ',' << overlap_ns << ','
-              << (measurement_ns > union_ns ? measurement_ns - union_ns : 0)
-              << ',' << static_cast<double>(array_ns) / measurement_ns << ','
-              << static_cast<double>(fabric_ns) / measurement_ns << ','
-              << static_cast<double>(host_ns) / measurement_ns << ','
-              << static_cast<double>(plane_sum) / measurement_ns << ','
-              << max_concurrency(stack_array_intervals_.at(stack)) << '\n';
+              << (resource_measurement_ns > union_ns
+                      ? resource_measurement_ns - union_ns
+                      : 0)
+              << ','
+              << static_cast<double>(array_ns) / resource_measurement_ns << ','
+              << static_cast<double>(fabric_ns) / resource_measurement_ns
+              << ',' << static_cast<double>(host_ns) /
+                            resource_measurement_ns
+              << ','
+              << static_cast<double>(
+                     resources_.active_plane_area(stack, window_end) /
+                     resource_measurement_ns)
+              << ',' << resources_.max_active_planes(stack) << '\n';
   }
 
   std::ofstream ports(std::filesystem::path(output_dir) /
@@ -531,11 +435,12 @@ void StatsCollector::write(const std::string& output_dir,
   ports << "stack,port,busy_ns,utilization\n";
   for (std::uint32_t stack = 0; stack < stacks_; ++stack) {
     for (std::uint32_t port = 0; port < ports_per_stack_; ++port) {
-      const auto intervals = merge(port_intervals_.at(
-          static_cast<std::size_t>(stack) * ports_per_stack_ + port));
-      const auto busy = duration(intervals);
+      const auto busy = resources_.port_busy(
+          static_cast<std::uint32_t>(
+              static_cast<std::size_t>(stack) * ports_per_stack_ + port),
+          window_end);
       ports << stack << ',' << port << ',' << busy << ','
-            << static_cast<double>(busy) / measurement_ns << '\n';
+            << static_cast<double>(busy) / resource_measurement_ns << '\n';
     }
   }
 
@@ -544,11 +449,12 @@ void StatsCollector::write(const std::string& output_dir,
   dies << "stack,die,busy_ns,utilization\n";
   for (std::uint32_t stack = 0; stack < stacks_; ++stack) {
     for (std::uint32_t die = 0; die < dies_per_stack_; ++die) {
-      const auto intervals = merge(die_intervals_.at(
-          static_cast<std::size_t>(stack) * dies_per_stack_ + die));
-      const auto busy = duration(intervals);
+      const auto busy = resources_.die_busy(
+          static_cast<std::uint32_t>(
+              static_cast<std::size_t>(stack) * dies_per_stack_ + die),
+          window_end);
       dies << stack << ',' << die << ',' << busy << ','
-           << static_cast<double>(busy) / measurement_ns << '\n';
+           << static_cast<double>(busy) / resource_measurement_ns << '\n';
     }
   }
 
@@ -558,12 +464,14 @@ void StatsCollector::write(const std::string& output_dir,
   for (std::uint32_t stack = 0; stack < stacks_; ++stack) {
     for (std::uint32_t channel = 0; channel < host_channels_per_stack_;
          ++channel) {
-      const auto intervals = merge(host_channel_intervals_.at(
-          static_cast<std::size_t>(stack) * host_channels_per_stack_ +
-          channel));
-      const auto busy = duration(intervals);
+      const auto busy = resources_.host_channel_busy(
+          static_cast<std::uint32_t>(
+              static_cast<std::size_t>(stack) *
+                  host_channels_per_stack_ +
+              channel),
+          window_end);
       hosts << stack << ',' << channel << ',' << busy << ','
-            << static_cast<double>(busy) / measurement_ns << '\n';
+            << static_cast<double>(busy) / resource_measurement_ns << '\n';
     }
   }
 
@@ -574,6 +482,14 @@ void StatsCollector::write(const std::string& output_dir,
     queues << sample.time << ',' << sample.reads << ',' << sample.writes
            << ',' << sample.erases << ',' << sample.refreshes << ','
            << sample.active_planes << '\n';
+  if (latest_queue_depth_ &&
+      (queue_depth_samples_.empty() ||
+       queue_depth_samples_.back().time != latest_queue_depth_->time))
+    queues << latest_queue_depth_->time << ',' << latest_queue_depth_->reads
+           << ',' << latest_queue_depth_->writes << ','
+           << latest_queue_depth_->erases << ','
+           << latest_queue_depth_->refreshes << ','
+           << latest_queue_depth_->active_planes << '\n';
 }
 
 }  // namespace hbfsim

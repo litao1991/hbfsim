@@ -53,6 +53,8 @@ Simulator::Simulator(Config config)
   stats_.set_topology(config_.stacks, config_.dies_per_stack,
                       config_.planes_per_die, config_.ports_per_stack,
                       config_.host_channels_per_stack);
+  stats_.set_queue_depth_sample_interval(
+      config_.queue_depth_sample_interval_ns);
   const auto physical_pages =
       static_cast<std::uint64_t>(config_.stacks) * config_.dies_per_stack *
       config_.planes_per_die * config_.blocks_per_plane *
@@ -204,7 +206,7 @@ void Simulator::retire_block(const PhysicalAddr& address) {
   } else if (!mapping && newly_bad) {
     const auto loss = static_cast<std::uint64_t>(config_.pages_per_block) *
                       config_.page_size;
-    stats_.record_retired_stripe(loss);
+    stats_.record_capacity_loss(loss);
   }
 }
 
@@ -245,9 +247,12 @@ LinkResource::Reservation Simulator::reserve_host(
     std::uint64_t bytes, bool measured) {
   auto reservation =
       host_interfaces_.at(route.stack).reserve(route, direction, now, bytes);
-  if (measured)
-    stats_.record_host_transfer(route.stack, route.channel, direction,
-                                reservation.start, reservation.transfer_end);
+  if (measured && reservation.transfer_end > reservation.start) {
+    schedule(reservation.start, EventType::ResourceHostStart,
+             route.stack, route.channel);
+    schedule(reservation.transfer_end, EventType::ResourceHostEnd,
+             route.stack, route.channel);
+  }
   return reservation;
 }
 
@@ -256,10 +261,12 @@ LinkResource::Reservation Simulator::reserve_fabric(
     bool measured) {
   auto reservation = fabrics_.at(address.stack).reserve_window(
       now, bytes, address.data_port);
-  if (measured)
-    stats_.record_fabric_transfer(address.stack, address.data_port,
-                                  reservation.start,
-                                  reservation.transfer_end);
+  if (measured && reservation.transfer_end > reservation.start) {
+    schedule(reservation.start, EventType::ResourceFabricStart,
+             address.stack, address.data_port);
+    schedule(reservation.transfer_end, EventType::ResourceFabricEnd,
+             address.stack, address.data_port);
+  }
   return reservation;
 }
 
@@ -466,6 +473,22 @@ void Simulator::record_queue_depth() {
   for (const auto value : active_per_stack_) active += value;
   stats_.record_queue_depth(now_, queue_depth_[0], queue_depth_[1],
                             queue_depth_[2], queue_depth_[3], active);
+}
+
+void Simulator::start_array_tracking(const SubRequest& sub, SimTime now) {
+  if (!is_measured(sub.parent_id)) return;
+  const auto local = sub.paddr.die * config_.planes_per_die +
+                     sub.paddr.plane;
+  stats_.record_resource_transition(ResourceKind::Array, sub.paddr.stack,
+                                    local, 1, now);
+}
+
+void Simulator::stop_array_tracking(const SubRequest& sub, SimTime now) {
+  if (!is_measured(sub.parent_id)) return;
+  const auto local = sub.paddr.die * config_.planes_per_die +
+                     sub.paddr.plane;
+  stats_.record_resource_transition(ResourceKind::Array, sub.paddr.stack,
+                                    local, -1, now);
 }
 
 }  // namespace hbfsim

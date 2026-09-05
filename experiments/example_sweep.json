@@ -1,0 +1,14 @@
+{
+  "base_config": "configs/hbf_baseline.yaml",
+  "trace": "traces/example.csv",
+  "output_root": "results/example_sweep",
+  "parameters": {
+    "scheduler.max_consecutive_reads": [16, 64],
+    "statistics.queue_depth_sample_interval_ns": [1000, 10000]
+  },
+  "plot_metrics": [
+    "p99_latency_ns",
+    "effective_bandwidth_GBps",
+    "stripe_write_amplification"
+  ]
+}

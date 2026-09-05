@@ -123,10 +123,12 @@ struct Config {
   std::uint64_t random_seed = 1;
   std::uint64_t max_requests = 0;
   std::uint64_t warmup_requests = 0;
+  SimTime queue_depth_sample_interval_ns = 1'000;
   std::string output_dir = "results";
 
   static Config from_yaml_file(const std::string& path);
   void validate() const;
+  void write_resolved_yaml(const std::string& path) const;
 };
 
 struct PhysicalAddr {
@@ -557,6 +559,8 @@ struct Plane {
 };
 
 enum class EventType { DispatchWake, RefreshManagerWake,
+                       ResourceFabricStart, ResourceFabricEnd,
+                       ResourceHostStart, ResourceHostEnd,
                        HostArrival, HostCommandDone, SubreqReady,
                        NandSuspendDone, NandReadDone,
                        NandDataInDone, NandProgramDone, NandEraseDone,
@@ -605,17 +609,71 @@ class LatencyHistogram {
   long double sum_ = 0;
 };
 
+enum class ResourceKind { Array, Fabric, Host };
+
+class ResourceTracker {
+ public:
+  void configure(std::uint32_t stacks, std::uint32_t dies_per_stack,
+                 std::uint32_t planes_per_die,
+                 std::uint32_t ports_per_stack,
+                 std::uint32_t host_channels_per_stack);
+  void transition(ResourceKind kind, std::uint32_t stack,
+                  std::uint32_t local_index, int delta, SimTime now);
+  SimTime array_busy(std::uint32_t stack, SimTime until) const;
+  SimTime fabric_busy(std::uint32_t stack, SimTime until) const;
+  SimTime host_busy(std::uint32_t stack, SimTime until) const;
+  SimTime array_fabric_overlap(std::uint32_t stack, SimTime until) const;
+  long double active_plane_area(std::uint32_t stack, SimTime until) const;
+  std::uint32_t max_active_planes(std::uint32_t stack) const;
+  SimTime plane_busy(std::uint32_t flat_plane, SimTime until) const;
+  SimTime die_busy(std::uint32_t flat_die, SimTime until) const;
+  SimTime port_busy(std::uint32_t flat_port, SimTime until) const;
+  SimTime host_channel_busy(std::uint32_t flat_channel,
+                            SimTime until) const;
+
+ private:
+  struct BusyCounter {
+    SimTime last_time = 0;
+    SimTime busy_ns = 0;
+    std::uint32_t active = 0;
+    std::uint32_t maximum = 0;
+  };
+  struct StackCounter {
+    SimTime last_time = 0;
+    SimTime array_busy_ns = 0;
+    SimTime fabric_busy_ns = 0;
+    SimTime host_busy_ns = 0;
+    SimTime overlap_ns = 0;
+    long double active_plane_area_ns = 0;
+    std::uint32_t arrays = 0;
+    std::uint32_t fabrics = 0;
+    std::uint32_t hosts = 0;
+    std::uint32_t max_arrays = 0;
+  };
+  static SimTime busy_until(const BusyCounter& counter, SimTime until);
+  static void advance(BusyCounter& counter, int delta, SimTime now);
+  static void advance(StackCounter& counter, ResourceKind kind, int delta,
+                      SimTime now);
+  std::uint32_t dies_per_stack_ = 0;
+  std::uint32_t planes_per_die_ = 0;
+  std::uint32_t ports_per_stack_ = 0;
+  std::uint32_t host_channels_per_stack_ = 0;
+  std::vector<StackCounter> stacks_;
+  std::vector<BusyCounter> planes_;
+  std::vector<BusyCounter> dies_;
+  std::vector<BusyCounter> ports_;
+  std::vector<BusyCounter> host_channels_;
+};
+
 class StatsCollector {
  public:
   void record_request(const Request& request);
   void record_subrequest(const SubRequest& subrequest);
-  void record_array_issue(std::uint32_t stack, std::uint32_t die,
-                          std::uint32_t plane, SimTime start, SimTime end);
-  void record_fabric_transfer(std::uint32_t stack, std::uint32_t port,
-                              SimTime start, SimTime end);
-  void record_host_transfer(std::uint32_t stack, std::uint32_t channel,
-                            HostLinkDirection direction, SimTime start,
-                            SimTime end);
+  void record_resource_transition(ResourceKind kind, std::uint32_t stack,
+                                  std::uint32_t local_index, int delta,
+                                  SimTime now) {
+    resources_.transition(kind, stack, local_index, delta, now);
+  }
   void record_queue_depth(SimTime time, std::uint64_t reads,
                           std::uint64_t writes, std::uint64_t erases,
                           std::uint64_t refreshes,
@@ -629,12 +687,15 @@ class StatsCollector {
   }
   void record_erase_failure() { ++erase_failures_; }
   void record_retired_block() { ++retired_blocks_; }
-  void record_retired_stripe(std::uint64_t capacity_loss_bytes) {
-    ++retired_stripes_;
+  void record_capacity_loss(std::uint64_t capacity_loss_bytes) {
     usable_physical_capacity_bytes_ =
         capacity_loss_bytes > usable_physical_capacity_bytes_
             ? 0
             : usable_physical_capacity_bytes_ - capacity_loss_bytes;
+  }
+  void record_retired_stripe(std::uint64_t capacity_loss_bytes) {
+    ++retired_stripes_;
+    record_capacity_loss(capacity_loss_bytes);
   }
   void set_capacity(std::uint64_t physical_bytes,
                     std::uint64_t host_visible_bytes) {
@@ -667,6 +728,9 @@ class StatsCollector {
                     std::uint32_t planes_per_die,
                     std::uint32_t ports_per_stack,
                     std::uint32_t host_channels_per_stack);
+  void set_queue_depth_sample_interval(SimTime interval_ns) {
+    queue_depth_sample_interval_ns_ = interval_ns;
+  }
   void write(const std::string& output_dir, SimTime makespan) const;
   std::uint64_t completed_requests() const { return completed_requests_; }
   double mean_latency_ns() const;
@@ -726,9 +790,17 @@ class StatsCollector {
   }
   std::uint64_t copy_buffer_high_watermark(
       TransactionSource source) const;
+  std::size_t queue_depth_sample_count() const {
+    return queue_depth_samples_.size() +
+           (latest_queue_depth_ &&
+                    (queue_depth_samples_.empty() ||
+                     queue_depth_samples_.back().time !=
+                         latest_queue_depth_->time)
+                ? 1
+                : 0);
+  }
 
  private:
-  struct Interval { SimTime start = 0; SimTime end = 0; };
   struct QueueDepthSample {
     SimTime time = 0;
     std::uint64_t reads = 0;
@@ -783,7 +855,6 @@ class StatsCollector {
   LatencyHistogram latencies_;
   std::map<OpType, LatencyHistogram> op_latencies_;
   std::map<OpType, std::uint64_t> op_bytes_;
-  std::unordered_map<std::uint32_t, SimTime> plane_busy_ns_;
   std::map<OpType, LatencyBreakdown> latency_breakdown_;
   std::map<OpType, std::uint64_t> latency_breakdown_samples_;
   std::map<std::pair<TransactionSource, OpType>, LatencyBreakdown>
@@ -799,13 +870,10 @@ class StatsCollector {
   LatencyHistogram refresh_latencies_;
   std::map<TransactionSource, std::uint64_t>
       copy_buffer_high_watermarks_;
-  std::vector<std::vector<Interval>> stack_array_intervals_;
-  std::vector<std::vector<Interval>> stack_fabric_intervals_;
-  std::vector<std::vector<Interval>> stack_host_intervals_;
-  std::vector<std::vector<Interval>> die_intervals_;
-  std::vector<std::vector<Interval>> port_intervals_;
-  std::vector<std::vector<Interval>> host_channel_intervals_;
+  ResourceTracker resources_;
+  SimTime queue_depth_sample_interval_ns_ = 1'000;
   std::vector<QueueDepthSample> queue_depth_samples_;
+  std::optional<QueueDepthSample> latest_queue_depth_;
 };
 
 class Simulator {
@@ -877,6 +945,8 @@ class Simulator {
   void retire_block(const PhysicalAddr& paddr);
   bool is_measured(std::uint64_t request_id) const;
   void record_queue_depth();
+  void start_array_tracking(const SubRequest& subrequest, SimTime now);
+  void stop_array_tracking(const SubRequest& subrequest, SimTime now);
   std::uint64_t start_copy_job(TransactionSource source,
                                const StripeId& stripe,
                                std::optional<std::uint32_t> replay_slot,

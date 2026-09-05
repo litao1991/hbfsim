@@ -174,7 +174,7 @@ DataFabric 同时受以下条件约束：
 
 ## 7. Program failure
 
-每次 Program 完成时，以 `program_failure_rate` 做 Bernoulli 抽样。
+每次 Program 完成时，以 `clamp(program_failure_rate + erase_count × program_failure_rate_per_erase, 0, 1)` 做 Bernoulli 抽样。
 
 成功：
 
@@ -195,7 +195,8 @@ DataFabric 同时受以下条件约束：
 第 `retry` 次读取的期望位错误数为：
 
 ```text
-lambda = bytes × 8 × raw_bit_error_rate
+effective_RBER = clamp(raw_bit_error_rate + erase_count × raw_bit_error_rate_per_erase, 0, 1)
+lambda = bytes × 8 × effective_RBER
          × retry_ber_multiplier ^ retry
 ```
 
@@ -212,6 +213,8 @@ errors > ecc_correctable_bits      → UNCORRECTABLE
 UNCORRECTABLE 且未达到 `max_read_retries` 时，等待 `read_retry_ns` 后重新执行 `read_ns`。重试耗尽后请求失败，Page 进入 FAILED。后续读取若成功，可以清除读取产生的 FAILED 标记。
 
 随机序列由 `random_seed` 固定，便于实验复现。
+
+Erase 失败概率同样为 `clamp(erase_failure_rate + erase_count × erase_failure_rate_per_erase, 0, 1)`。失败 Erase 或达到 `max_erase_cycles` 会退休 Block；Host-managed 模式同时退休整个固定几何 physical stripe，使其不能再次分配。
 
 ## 9. 关键不变量
 

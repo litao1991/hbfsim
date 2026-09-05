@@ -80,6 +80,20 @@ void Simulator::complete_subrequest(std::uint64_t id, SimTime now) {
 }
 
 void Simulator::handle(const Event& event) {
+  if (event.type == EventType::ResourceFabricStart ||
+      event.type == EventType::ResourceFabricEnd ||
+      event.type == EventType::ResourceHostStart ||
+      event.type == EventType::ResourceHostEnd) {
+    const bool start = event.type == EventType::ResourceFabricStart ||
+                       event.type == EventType::ResourceHostStart;
+    const bool fabric = event.type == EventType::ResourceFabricStart ||
+                        event.type == EventType::ResourceFabricEnd;
+    stats_.record_resource_transition(
+        fabric ? ResourceKind::Fabric : ResourceKind::Host,
+        static_cast<std::uint32_t>(event.request_id),
+        static_cast<std::uint32_t>(event.subreq_id), start ? 1 : -1, now_);
+    return;
+  }
   if (event.type == EventType::DispatchWake) {
     const auto stack = static_cast<std::uint32_t>(event.subreq_id);
     if (dispatch_wake_at_.at(stack) == now_)
@@ -99,6 +113,10 @@ void Simulator::handle(const Event& event) {
   switch (event.type) {
     case EventType::DispatchWake:
     case EventType::RefreshManagerWake:
+    case EventType::ResourceFabricStart:
+    case EventType::ResourceFabricEnd:
+    case EventType::ResourceHostStart:
+    case EventType::ResourceHostEnd:
       break;
     case EventType::HostArrival: {
       const auto first =
@@ -125,10 +143,7 @@ void Simulator::handle(const Event& event) {
       if (!target.suspend_pending ||
           target.active_subrequest != sub.id)
         break;
-      if (is_measured(sub.parent_id))
-        stats_.record_array_issue(sub.paddr.stack, sub.paddr.die,
-                                  plane_index(sub.paddr),
-                                  sub.array_active_since, now_);
+      stop_array_tracking(sub, now_);
       sub.latency.array_service_ns += now_ - sub.array_active_since;
       release_array(sub);
       target.active_subrequest.reset();
@@ -175,10 +190,7 @@ void Simulator::handle(const Event& event) {
         bitmap_clear(block.failed_bitmap, sub.paddr.page);
       }
       clear_transient_page_state(sub.paddr);
-      if (is_measured(sub.parent_id))
-        stats_.record_array_issue(sub.paddr.stack, sub.paddr.die,
-                                  plane_index(sub.paddr),
-                                  sub.array_active_since, now_);
+      stop_array_tracking(sub, now_);
       sub.latency.array_service_ns += now_ - sub.array_active_since;
       release_array(sub);
       target.active_subrequest.reset();
@@ -215,10 +227,7 @@ void Simulator::handle(const Event& event) {
       if (sub.array_completion_time != now_) break;
       auto& target = plane(sub.paddr);
       auto& block = target.blocks.at(sub.paddr.block);
-      if (is_measured(sub.parent_id))
-        stats_.record_array_issue(sub.paddr.stack, sub.paddr.die,
-                                  plane_index(sub.paddr),
-                                  sub.array_active_since, now_);
+      stop_array_tracking(sub, now_);
       sub.latency.array_service_ns += now_ - sub.array_active_since;
       std::optional<ProgramFailureNotice> failure_notice;
       if (reliability_.program_failed(block.erase_count)) {
@@ -275,10 +284,7 @@ void Simulator::handle(const Event& event) {
       if (sub.array_completion_time != now_) break;
       auto& target = plane(sub.paddr);
       auto& block = target.blocks.at(sub.paddr.block);
-      if (is_measured(sub.parent_id))
-        stats_.record_array_issue(sub.paddr.stack, sub.paddr.die,
-                                  plane_index(sub.paddr),
-                                  sub.array_active_since, now_);
+      stop_array_tracking(sub, now_);
       sub.latency.array_service_ns += now_ - sub.array_active_since;
       if (reliability_.erase_failed(block.erase_count)) {
         sub.failed = true;
@@ -317,10 +323,7 @@ void Simulator::handle(const Event& event) {
       auto& sub = subrequests_.at(event.subreq_id);
       if (sub.array_completion_time != now_) break;
       auto& target = plane(sub.paddr);
-      if (is_measured(sub.parent_id))
-        stats_.record_array_issue(sub.paddr.stack, sub.paddr.die,
-                                  plane_index(sub.paddr),
-                                  sub.array_active_since, now_);
+      stop_array_tracking(sub, now_);
       sub.latency.array_service_ns += now_ - sub.array_active_since;
       target.blocks.at(sub.paddr.block).last_refresh_time = now_;
       release_array(sub);

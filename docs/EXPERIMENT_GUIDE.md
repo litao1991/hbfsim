@@ -111,6 +111,7 @@ Read/Write/Invalidate 的 `size` 必须非零且按 Page 对齐。Invalidate 是
 | `mapping.policy` | `linear/fine_stripe/burst_stripe/host_managed` |
 | `mapping.burst_size` | Burst Stripe 的连续 burst 大小 |
 | `scheduler.write_starvation_us` | 非 Read 最大等待阈值，单位 us |
+| `scheduler.write_starvation_ns` | 非 Read 最大等待阈值，单位 ns；若同时设置则覆盖旧的 us key |
 | `scheduler.source_aging_ns` | GC 等低优先级来源提升为最高仲裁级别前的等待时间 |
 | `scheduler.max_consecutive_reads` | 连续读上限 |
 | `host_management.auto_recovery` | Program Failure 后由仿真 Host 自动运行 Recovery Copy |
@@ -139,18 +140,35 @@ Read/Write/Invalidate 的 `size` 必须非零且按 Page 对齐。Invalidate 是
 | Key | 含义 |
 |---|---|
 | `nand.reliability.program_failure_rate` | 每次 Program 的失败概率 `[0,1]` |
+| `nand.reliability.program_failure_rate_per_erase` | 每次 P/E 后增加的 Program Failure 概率 |
 | `nand.reliability.program_failure_budget` | 最多注入的 Program Failure 数；`0` 表示不限制 |
 | `nand.reliability.raw_bit_error_rate` | 初次 Read 的原始位错误率 `[0,1]` |
+| `nand.reliability.raw_bit_error_rate_per_erase` | 每次 P/E 后增加的 RBER |
+| `nand.reliability.erase_failure_rate` | Erase 基础失败概率 |
+| `nand.reliability.erase_failure_rate_per_erase` | 每次 P/E 后增加的 Erase Failure 概率 |
+| `nand.reliability.max_erase_cycles` | 成功擦除达到该次数后退休；0 表示无限制 |
 | `nand.reliability.retry_ber_multiplier` | 每次 Retry 后 BER 乘数 `[0,1]` |
 | `nand.reliability.ecc_correctable_bits` | 每 Page/子请求可纠正 bit 数 |
 | `nand.reliability.max_read_retries` | 最大重试次数，不含初次 Read |
 | `nand.reliability.random_seed` | 确定性随机种子 |
 
-### 3.10 输出
+### 3.10 Automatic Refresh
+
+| Key | 含义 |
+|---|---|
+| `refresh.enabled` | 启用基于 Retention Deadline 的 Host-managed Refresh |
+| `refresh.retention_time_ns` | 从条带首次成功 Program 起计算的 retention 时间 |
+| `refresh.guard_time_ns` | 在 deadline 前提前启动 Copy 的时间 |
+| `refresh.max_concurrent_jobs` | 同时存在的 Refresh Copy job 上限 |
+
+Automatic Refresh 仅支持 `host_managed`，复用 Recovery/GC 的 CopyEngine，但使用独立 `TransactionSource::Refresh` 统计和优先级。
+
+### 3.11 输出
 
 | Key | 含义 |
 |---|---|
 | `statistics.output_dir` | CSV 输出目录 |
+| `statistics.queue_depth_sample_interval_ns` | Queue Depth 最小采样间隔；0 表示记录每次变化 |
 
 ## 4. 输出指标
 
@@ -184,8 +202,10 @@ plane,busy_ns,utilization
 - `latency_breakdown.csv`：Host command、Host data、NAND queue、array、fabric 的平均等待/服务时间；
 - `source_latency_breakdown.csv`：按照 `TransactionSource × OpType` 分组的字节、失败数和延迟分解；
 - `resource_utilization.csv`：每 Stack 的 Array-only、Fabric-only、Overlap、Idle，以及 Host 利用率和活跃 Plane；
-- `queue_depth.csv`：队列变化时的 Read/Write/Erase/Refresh 深度和活跃 Plane；
+- `queue_depth.csv`：按配置间隔采样的 Read/Write/Erase/Refresh 深度和活跃 Plane，并保留最终状态；
 - `data_port_utilization.csv`、`die_utilization.csv`、`host_channel_utilization.csv`：细粒度资源占用。
+
+每次直接运行还会生成 `resolved_config.yaml`。批量实验使用 `python3 tools/experiment_runner.py experiments/example_sweep.json --binary build/hbfsim`；Runner 会记录 Git SHA、Trace/config SHA-256、参数和日志，汇总 `sweep_summary.csv` 并自动生成 SVG。详细契约见 [V0.2.6_SCALABLE_STATS_EXPERIMENTS.md](V0.2.6_SCALABLE_STATS_EXPERIMENTS.md)。
 
 ## 5. 推荐实验矩阵
 

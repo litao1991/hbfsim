@@ -4,7 +4,7 @@
 
 本文定义 HBFSim v0.2 的 Host-managed 映射、Program Failure 恢复和主动 GC 语义，也是实现状态清单。
 
-截至 v0.2.3，阶段 A/B 已完成；阶段 C 的失败通知、Host replay、流水数据搬运和 destination retry 已完成；阶段 D 同时支持 Host 显式 Victim 和 `HostGcManager` 水位触发 Victim，具备 OP 容量预留、有效 slot 搬运、全失效快速擦除、原子提交和源条带擦除。Automatic Refresh、更丰富的 Victim 策略，以及完整 extent/sparse fallback 仍在后续阶段。
+截至 v0.2.6，阶段 A/B 已完成；阶段 C 的失败通知、Host replay、流水数据搬运和 destination retry 已完成；阶段 D 支持 Host 显式/水位触发 GC，并由同一 CopyEngine 执行 Automatic Refresh。erase_count、坏块/条带退休和容量降级也已接入。更丰富的 Victim 策略以及完整 extent/sparse Host 写入 fallback 仍在后续阶段。
 
 设计目标是利用上层提供的严格顺序约束，把传统逐 Page L2P/P2L 表收敛为条带级元数据，同时仍然准确模拟物理 Page 状态、数据搬运流量、资源竞争和失败恢复延迟。
 
@@ -431,4 +431,4 @@ Copy 不是零延迟元数据命令，而是由 Read/Data Move/Program 事务组
 
 ## 17. 非目标
 
-本设计不引入设备自主 FTL、设备自主 GC、隐式覆盖或原地覆盖。v0.2.3 的自动 GC 属于 Host policy 编排。Automatic Refresh、cost-benefit/age/wear-aware Victim、Wear Leveling、坏块容量降级和 HBM/HBF 联合模型仍是独立后续模块；它们必须通过相同 Host/Media 边界接入，不能绕过 generation 和原子映射提交规则。
+本设计不引入设备自主 FTL、设备自主 GC、隐式覆盖或原地覆盖。自动 GC 与 Automatic Refresh 都属于 Host policy 编排。Wear Leveling、cost-benefit/age-aware Victim 和 HBM/HBF 联合模型仍是独立后续模块；它们必须通过相同 Host/Media 边界接入，不能绕过 generation、退休状态和原子映射提交规则。

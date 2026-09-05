@@ -3,6 +3,9 @@
 /build-*/
 /cmake-build-*/
 /out/
+/results/
+__pycache__/
+*.pyc
 
 # CMake generated files
 CMakeCache.txt

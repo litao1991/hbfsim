@@ -1,6 +1,6 @@
 # HBFSim 设计文档
 
-本目录记录 HBFSim v0.2.3 的架构、模型语义和实验方法。文档以当前代码实现为准。
+本目录记录 HBFSim v0.2.6 的架构、模型语义和实验方法。文档以当前代码实现为准。
 
 ## 文档索引
 
@@ -9,6 +9,9 @@
 - [EXPERIMENT_GUIDE.md](EXPERIMENT_GUIDE.md)：构建运行、配置项、trace 格式、统计指标与实验建议。
 - [V0.1.1_OPTIMIZATION.md](V0.1.1_OPTIMIZATION.md)：本轮架构收敛内容、兼容性和后续边界。
 - [HOST_MANAGED_STRIPE_MAPPING.md](HOST_MANAGED_STRIPE_MAPPING.md)：v0.2 Host-managed 顺序条带、隐式 Reverse Mapping、当前实现状态、失败恢复和主动 GC 设计。
+- [V0.2.4_AUTOMATIC_REFRESH.md](V0.2.4_AUTOMATIC_REFRESH.md)：Retention Deadline、RefreshManager 与 CopyEngine 复用。
+- [V0.2.5_WEAR_BAD_BLOCK_CAPACITY.md](V0.2.5_WEAR_BAD_BLOCK_CAPACITY.md)：P/E 磨损、坏块退休与容量降级。
+- [V0.2.6_SCALABLE_STATS_EXPERIMENTS.md](V0.2.6_SCALABLE_STATS_EXPERIMENTS.md)：在线资源统计、队列采样和可复现实验 Runner。
 
 ## 设计定位
 

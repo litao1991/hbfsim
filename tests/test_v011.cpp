@@ -81,6 +81,8 @@ int main() {
                    "  prefetch_window_pages: 11\n"
                    "scheduler:\n"
                    "  source_aging_ns: 1234\n"
+                   "statistics:\n"
+                   "  queue_depth_sample_interval_ns: 25us\n"
                    "nand:\n"
                    "  reliability:\n"
                    "    program_failure_budget: 2\n"
@@ -116,6 +118,7 @@ int main() {
     CHECK(parsed.copy_buffer_size == 8 * 1024);
     CHECK(parsed.copy_prefetch_window_pages == 11);
     CHECK(parsed.source_aging_ns == 1234);
+    CHECK(parsed.queue_depth_sample_interval_ns == 25'000);
     CHECK(parsed.program_failure_budget == 2);
     CHECK(parsed.program_failure_rate_per_erase == 0.01);
     CHECK(parsed.erase_failure_rate == 0.02);
@@ -189,6 +192,15 @@ int main() {
                                   "source_latency_breakdown.csv"));
     CHECK(std::filesystem::exists(output / "resource_utilization.csv"));
     CHECK(std::filesystem::exists(output / "queue_depth.csv"));
+    const auto resolved = output / "resolved_config.yaml";
+    config.write_resolved_yaml(resolved.string());
+    CHECK(std::filesystem::exists(resolved));
+    const auto round_trip =
+        hbfsim::Config::from_yaml_file(resolved.string());
+    CHECK(round_trip.page_size == config.page_size);
+    CHECK(round_trip.mapping_policy == config.mapping_policy);
+    CHECK(round_trip.queue_depth_sample_interval_ns ==
+          config.queue_depth_sample_interval_ns);
     std::ifstream summary(output / "summary.csv");
     const std::string contents((std::istreambuf_iterator<char>(summary)),
                                std::istreambuf_iterator<char>());

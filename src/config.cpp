@@ -205,6 +205,7 @@ Config Config::from_yaml_file(const std::string& path) {
   if (const auto it = values.find("mapping.policy"); it != values.end()) config.mapping_policy = parse_mapping(it->second);
   detail::assign_if(values, "scheduler.write_starvation_us", config.write_starvation_ns,
                     [](const std::string& v) { return detail::parse_u64(v) * 1'000ULL; });
+  detail::assign_if(values, "scheduler.write_starvation_ns", config.write_starvation_ns, time);
   detail::assign_if(values, "scheduler.source_aging_ns", config.source_aging_ns, time);
   detail::assign_if(values, "scheduler.max_consecutive_reads", config.max_consecutive_reads, integer);
   detail::assign_if(values, "host_management.auto_recovery", config.auto_recovery_enabled, parse_bool);
@@ -243,6 +244,7 @@ Config Config::from_yaml_file(const std::string& path) {
   detail::assign_if(values, "nand.reliability.random_seed", config.random_seed, integer);
   detail::assign_if(values, "simulation.max_requests", config.max_requests, integer);
   detail::assign_if(values, "simulation.warmup_requests", config.warmup_requests, integer);
+  detail::assign_if(values, "statistics.queue_depth_sample_interval_ns", config.queue_depth_sample_interval_ns, time);
   if (const auto it = values.find("statistics.output_dir"); it != values.end()) config.output_dir = it->second;
   config.validate();
   return config;

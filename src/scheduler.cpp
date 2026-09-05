@@ -186,6 +186,7 @@ bool Simulator::try_resume(Plane& target, SimTime now) {
   sub.array_active_since = now;
   ++active_per_die_.at(die_index);
   ++active_per_stack_.at(sub.paddr.stack);
+  start_array_tracking(sub, now);
   record_queue_depth();
   claim_command(sub, now, false);
   const auto done = now + config_.resume_ns + sub.suspended_remaining_ns;
@@ -418,6 +419,7 @@ void Simulator::issue(std::uint64_t id, SimTime now, bool shared_command) {
                          sub.paddr.die;
   ++active_per_die_.at(die_index);
   ++active_per_stack_.at(sub.paddr.stack);
+  start_array_tracking(sub, now);
   record_queue_depth();
   target.active_subrequest = sub.id;
   sub.array_active_since = now;
@@ -469,6 +471,7 @@ void Simulator::start_program(std::uint64_t id, SimTime now,
                          sub.paddr.die;
   ++active_per_die_.at(die_index);
   ++active_per_stack_.at(sub.paddr.stack);
+  start_array_tracking(sub, now);
   record_queue_depth();
   sub.array_active_since = now;
   const auto done = now + config_.program_ns;

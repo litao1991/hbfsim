@@ -1,8 +1,8 @@
-# HBFSim v0.2.5
+# HBFSim v0.2.6
 
 HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style NAND stacks. It models performance-relevant resources rather than packet- or bit-level hardware details.
 
-## Included through v0.2.5
+## Included through v0.2.6
 
 - Host commands and write/read payloads use separate staged events; requests are split into page-sized subrequests.
 - Stack → Die → Plane topology, with per-die and per-stack array-concurrency caps.
@@ -18,7 +18,7 @@ HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style
 - Deterministic seeded program-failure injection and Poisson raw-bit-error sampling, with configurable ECC strength, retry count, retry latency, and retry BER reduction.
 - Host-managed writes reserve monotonically increasing stripe slots when the Host command is accepted. In-place overwrite and skipped slots are rejected; completion commits `VALID` or `FAILED` state without a page-level L2P entry.
 - A Host-managed physical stripe spans the same block index on every configured Stack/Die/Plane lane. Its fixed interleave supports O(1) LPN→PPA and PPA→LPN, lazy state bitmaps, atomic replacement commits, and generation validation after erase/reuse.
-- Source-aware arbitration separates User, Recovery, Maintenance, Mapping, and GC traffic. Critical Recovery and foreground reads receive priority, while configurable aging prevents background starvation.
+- Source-aware arbitration separates User, Recovery, Maintenance, Mapping, Refresh, and GC traffic. Critical Recovery and foreground reads receive priority, while configurable aging prevents background starvation.
 - Recovery and explicit Host GC use a shared timed CopyEngine. Live pages traverse NAND Read, DataFabric, Host D2H/H2D, DataFabric, and NAND Program before atomic remap and multi-lane source erase. Failed destination stripes are aborted and retried without losing the active source.
 - CopyEngine reads are pipelined with configurable read-ahead, in-flight Read/Program limits, and a capacity-bounded Host Copy Buffer. Reads may complete out of order, while destination slots are reserved strictly in increasing order. A destination failure first drains already-issued work before abort/erase/retry.
 - `HostGcManager` starts Host-managed reclamation at a configurable free-stripe low watermark and continues toward a high watermark. It supports deterministic `invalid_ratio` and `greedy` victim selection, reserves overprovisioned stripes from Host-visible capacity, and directly erases fully invalid victims without allocating a destination.
@@ -28,8 +28,10 @@ HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style
 - CSV traces stream one record at a time. The production path enforces `INITIALIZE → WARMUP → MEASURE → DRAIN`; warm-up is fully drained before measured requests are admitted.
 - `empty`, `image_loaded`, and `preconditioned` initialization modes allow strict validation for read-only traces without allocating metadata for the full device.
 - Fixed-memory latency histograms report p50/p95/p99/p99.9. Additional CSVs expose transaction latency breakdown, queue depth, Stack array/fabric overlap, and Host Channel/DataPort/Die utilization.
+- `ResourceTracker` accumulates Array/Fabric/Host occupancy and overlap online with memory bounded by topology. Queue depth is interval-sampled rather than retained at every state change.
+- `tools/experiment_runner.py` expands Cartesian parameter sweeps, runs them in parallel, records Git SHA and SHA-256 hashes, preserves input and fully resolved configs, aggregates metrics, and creates dependency-free SVG plots.
 
-Explicit in-place Refresh remains available as a maintenance operation. Automatic Refresh uses copy/remap/erase semantics. Wear leveling, temperature-aware retention, detailed voltage-threshold distributions, HBM overlap, and packet-level UCIe remain outside v0.2.5.
+Explicit in-place Refresh remains available as a maintenance operation. Automatic Refresh uses copy/remap/erase semantics. Wear leveling, temperature-aware retention, detailed voltage-threshold distributions, HBM overlap, and packet-level UCIe remain outside v0.2.6.
 
 The reliability model is command-level rather than bit-level: each read samples a raw error count from a Poisson distribution, ECC corrects counts within `ecc_correctable_bits`, and each retry multiplies BER by `retry_ber_multiplier`. A failed program consumes its sequential-program position but does not replace the previous L2P mapping.
 
@@ -47,9 +49,11 @@ src/host_gc.cpp    Host-side watermarks, victim selection, and GC admission
 src/copy_engine.cpp pipelined Recovery/Host-GC copy and bounded buffering
 src/link.cpp        HostRouter, full-duplex HostInterface, and DataFabric
 src/reliability.cpp seeded program-failure, raw-error, ECC, and retry model
+src/resource_tracker.cpp online topology-bounded occupancy/overlap statistics
+src/resolved_config.cpp complete effective configuration serialization
 src/scheduler.cpp   queues, readiness checks, batching, cache, suspend/resume
 src/events.cpp      command completion and NAND state transitions
-src/stats.cpp       fixed-memory latency and resource-occupancy metrics
+src/stats.cpp       fixed-memory latency, sampled queues, and CSV metrics
 src/simulator.cpp   construction, request splitting, resources, and event loop
 src/internal.h      private parsing helpers shared by config/trace
 ```
@@ -65,7 +69,7 @@ ctest --test-dir build --output-on-failure
 ./build/hbfsim configs/hbf_baseline.yaml traces/example.csv
 ```
 
-The trace columns are `timestamp_ns,op,address,size,stream`; timestamps must be nondecreasing. Sizes may use `KiB`, `MiB`, `GiB`, or `TiB`; addresses accept decimal or `0x` hexadecimal notation. Results are emitted under `statistics.output_dir`. Besides `summary.csv` and `plane_utilization.csv`, v0.2.3 writes `latency_breakdown.csv`, `source_latency_breakdown.csv`, `resource_utilization.csv`, `queue_depth.csv`, `data_port_utilization.csv`, `die_utilization.csv`, and `host_channel_utilization.csv`. The summary also reports per-source Copy Buffer high-water marks and automatic Host GC pressure/reclamation metrics.
+The trace columns are `timestamp_ns,op,address,size,stream`; timestamps must be nondecreasing. Sizes may use `KiB`, `MiB`, `GiB`, or `TiB`; addresses accept decimal or `0x` hexadecimal notation. Results are emitted under `statistics.output_dir`. Each run writes `summary.csv`, latency/source breakdowns, online resource utilization, sampled `queue_depth.csv`, and a complete `resolved_config.yaml`.
 
 The baseline uses `initialization.mode: image_loaded` with strict validation. Metadata is materialized lazily for pages referenced by reads, so a large read-only image does not require one in-memory object per NAND page.
 
@@ -76,6 +80,8 @@ Multi-plane grouping requires the same operation, die, block index, and page ind
 The supplied baseline is a FLINT-like research configuration, not a claim about a mandatory HBF standard timing or topology.
 
 The v0.2 Host-managed mapping contract and implementation status are documented in [`docs/HOST_MANAGED_STRIPE_MAPPING.md`](docs/HOST_MANAGED_STRIPE_MAPPING.md). Automatic Refresh details are in [`docs/V0.2.4_AUTOMATIC_REFRESH.md`](docs/V0.2.4_AUTOMATIC_REFRESH.md).
+
+Run the supplied four-point reproducible sweep with `python3 tools/experiment_runner.py experiments/example_sweep.json`. See [`docs/V0.2.6_SCALABLE_STATS_EXPERIMENTS.md`](docs/V0.2.6_SCALABLE_STATS_EXPERIMENTS.md) for the manifest schema and output contract.
 
 For an automatic reclamation example, run `./build/hbfsim configs/hbf_host_gc.yaml traces/host_gc_cycle.csv`. The trace fills Host-visible capacity, explicitly trims one stripe, lets `HostGcManager` reclaim it, and then rewrites and reads the range.
 

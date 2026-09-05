@@ -1,6 +1,7 @@
 #include "hbfsim/core.h"
 
 #include <exception>
+#include <filesystem>
 #include <iostream>
 
 int main(int argc, char** argv) {
@@ -14,6 +15,9 @@ int main(int argc, char** argv) {
     hbfsim::Simulator simulator(config);
     simulator.run(trace);
     simulator.stats().write(config.output_dir, simulator.now());
+    config.write_resolved_yaml(
+        (std::filesystem::path(config.output_dir) /
+         "resolved_config.yaml").string());
     std::cout << "Completed " << simulator.stats().completed_requests()
               << " requests (" << simulator.stats().failed_requests()
               << " failed); mean latency "
