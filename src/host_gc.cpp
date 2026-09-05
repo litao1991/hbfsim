@@ -2,15 +2,21 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <optional>
 
 namespace hbfsim {
 namespace {
 
 std::size_t watermark(std::size_t total, double ratio) {
+  auto scaled = static_cast<long double>(total) * ratio;
+  const auto nearest = std::round(scaled);
+  const auto tolerance =
+      4.0L * std::numeric_limits<double>::epsilon() *
+      std::max(1.0L, std::abs(scaled));
+  if (std::abs(scaled - nearest) <= tolerance) scaled = nearest;
   return std::min(
-      total, static_cast<std::size_t>(
-                 std::ceil(static_cast<long double>(total) * ratio)));
+      total, static_cast<std::size_t>(std::ceil(scaled)));
 }
 
 struct Candidate {

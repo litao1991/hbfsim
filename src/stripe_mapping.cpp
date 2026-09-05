@@ -57,11 +57,18 @@ StripeMappingTable::StripeMappingTable(const Config& config)
     throw std::runtime_error("host-managed stripe geometry exceeds 32-bit slots");
   stripe_width_ = static_cast<std::uint32_t>(width);
   stripe_capacity_ = static_cast<std::uint32_t>(capacity);
+  auto scaled_reserved =
+      static_cast<long double>(config_.blocks_per_plane) *
+      config_.host_gc_overprovisioning_ratio;
+  const auto nearest_reserved = std::round(scaled_reserved);
+  const auto tolerance =
+      4.0L * std::numeric_limits<double>::epsilon() *
+      std::max(1.0L, std::abs(scaled_reserved));
+  if (std::abs(scaled_reserved - nearest_reserved) <= tolerance)
+    scaled_reserved = nearest_reserved;
   const auto reserved = std::min<std::size_t>(
       config_.blocks_per_plane - 1,
-      static_cast<std::size_t>(std::ceil(
-          static_cast<long double>(config_.blocks_per_plane) *
-          config_.host_gc_overprovisioning_ratio)));
+      static_cast<std::size_t>(std::ceil(scaled_reserved)));
   host_visible_stripes_ = config_.blocks_per_plane - reserved;
   descriptors_.resize(config_.blocks_per_plane);
   generations_.resize(config_.blocks_per_plane, 0);
