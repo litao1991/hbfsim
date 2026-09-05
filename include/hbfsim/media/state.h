@@ -35,6 +35,7 @@ struct DieState {
 struct BankState {
   SimTime command_ready_at = 0;
   BankReadCache read_cache;
+  BankSenseQueue sense_queue;
 };
 
 struct PlaneMediaState {

@@ -21,6 +21,8 @@ class NandMediaSystem {
   const DieState& die(const PhysicalAddr& address) const;
   BankState& bank(const PhysicalAddr& address);
   const BankState& bank(const PhysicalAddr& address) const;
+  BankSenseQueue& sense_queue(const PhysicalAddr& address);
+  const BankSenseQueue& sense_queue(const PhysicalAddr& address) const;
 
   PageState page_state(const PhysicalAddr& address) const;
   BlockState block_state(const PhysicalAddr& address) const;

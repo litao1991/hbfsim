@@ -147,6 +147,15 @@ const BankState& NandMediaSystem::bank(const PhysicalAddr& address) const {
   return banks_.at(topology_.flat_bank(address));
 }
 
+BankSenseQueue& NandMediaSystem::sense_queue(const PhysicalAddr& address) {
+  return bank(address).sense_queue;
+}
+
+const BankSenseQueue& NandMediaSystem::sense_queue(
+    const PhysicalAddr& address) const {
+  return bank(address).sense_queue;
+}
+
 std::uint64_t NandMediaSystem::page_key(const PhysicalAddr& address) const {
   return block_key(address) * config_.pages_per_block + address.page;
 }

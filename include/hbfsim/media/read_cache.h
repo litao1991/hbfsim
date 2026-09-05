@@ -4,6 +4,8 @@
 #include "hbfsim/common/types.h"
 
 #include <cstdint>
+#include <deque>
+#include <stdexcept>
 #include <vector>
 
 namespace hbfsim {
@@ -29,6 +31,35 @@ class BankReadCache {
  private:
   std::vector<ReadCacheEntry> entries_;
   std::uint64_t lru_clock_ = 0;
+};
+
+// Ordered ownership domain for NAND Sense. v0.5.0 deliberately keeps this
+// separate from the read cache and command-ready timing: a future Batch Read
+// scheduler can enqueue one group while legacy single reads retain their
+// established path.
+class BankSenseQueue {
+ public:
+  using EntryId = std::uint64_t;
+
+  void enqueue(EntryId id) {
+    if (!entries_.empty() && entries_.back() == id)
+      throw std::logic_error("duplicate bank sense queue entry");
+    entries_.push_back(id);
+  }
+  EntryId front() const {
+    if (entries_.empty()) throw std::logic_error("bank sense queue is empty");
+    return entries_.front();
+  }
+  void pop_front(EntryId id) {
+    if (entries_.empty() || entries_.front() != id)
+      throw std::logic_error("bank sense queue order violation");
+    entries_.pop_front();
+  }
+  bool empty() const { return entries_.empty(); }
+  std::size_t size() const { return entries_.size(); }
+
+ private:
+  std::deque<EntryId> entries_;
 };
 
 }  // namespace hbfsim

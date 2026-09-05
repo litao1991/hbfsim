@@ -8,6 +8,9 @@ namespace hbfsim {
 using SimTime = std::uint64_t;
 
 enum class OpType { Read, Write, Erase, Refresh, Invalidate };
+// ReadType is intentionally independent of OpType: a Batch read is still a
+// Read command, but is admitted to a Bank sense domain as one grouped unit.
+enum class ReadType { Single, Batch };
 enum class MappingPolicy { Linear, FineStripe, BurstStripe, HostManaged };
 enum class StripeScope { Device, Stack, Custom };
 enum class TransactionSource {

@@ -24,6 +24,7 @@ struct Request {
   std::uint64_t id = 0;
   SimTime arrival_time = 0;
   OpType op = OpType::Read;
+  ReadType read_type = ReadType::Single;
   std::uint64_t logical_addr = 0;
   std::uint64_t size = 0;
   std::uint32_t stream_id = 0;
@@ -60,6 +61,7 @@ struct SubRequest {
   std::uint64_t id = 0;
   std::uint64_t parent_id = 0;
   OpType op = OpType::Read;
+  ReadType read_type = ReadType::Single;
   TransactionSource source = TransactionSource::User;
   std::uint64_t lpn = 0;
   std::uint64_t bytes = 0;

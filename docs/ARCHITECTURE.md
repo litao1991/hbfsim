@@ -1,4 +1,4 @@
-# HBFSim v0.4.3 架构设计
+# HBFSim v0.5.0 架构设计
 
 ## 1. 目标与范围
 
@@ -54,6 +54,10 @@ v0.4.2 进一步将 active-plane credits、dispatch cursor/wakeup 与 program-re
 suspended/cached command）和 `PlaneMediaState`（block/page bitmap、array ready、
 data register）。所有可持久化 NAND 状态转换经由 `NandMediaSystem`，而不是由
 kernel 直接写入。
+
+v0.5.0 在每个 Bank 建立独立的有序 `BankSenseQueue`。它是 Batch Read 的 Sense
+资源域，不与 command-ready timestamp 或 Read Cache 混用：将来的聚合请求以一个
+Batch entry 进入队列，普通 Single Read 的既有时序则保持不变。
 
 ## 3. 源码模块
 
