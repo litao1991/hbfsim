@@ -15,10 +15,10 @@ int main() {
   hbfsim::Simulator sim(c);
   sim.submit({0, hbfsim::OpType::Write, 0, 4096, 0});
   sim.submit({5, hbfsim::OpType::Erase, 0, 0, 0});
-  sim.submit({10, hbfsim::OpType::Write, 0, 4096, 0});
+  sim.submit({70, hbfsim::OpType::Write, 0, 4096, 0});
   sim.submit({100, hbfsim::OpType::Read, 0, 4096, 0});
   sim.run_until(99);
-  CHECK(sim.page_state({0, 0, 0, 0, 0}) == hbfsim::PageState::Valid);
+  CHECK(sim.page_state({0, 0, 0, 1, 0}) == hbfsim::PageState::Valid);
   sim.run();
   CHECK(sim.stats().completed_requests() == 4);
   CHECK(sim.now() >= 100);

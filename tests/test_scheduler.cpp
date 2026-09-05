@@ -11,8 +11,8 @@ int main() {
   c.write_starvation_ns = 1; c.max_consecutive_reads = 1;
   hbfsim::Simulator sim(c);
   sim.submit({0, hbfsim::OpType::Write, 0, 4096, 0});
-  sim.submit({0, hbfsim::OpType::Read, 4096, 4096, 0});
-  sim.submit({0, hbfsim::OpType::Write, 8192, 4096, 0});
+  sim.submit({0, hbfsim::OpType::Read, 0, 4096, 0});
+  sim.submit({0, hbfsim::OpType::Write, 4096, 4096, 0});
   sim.run();
   CHECK(sim.stats().completed_requests() == 3);
 }

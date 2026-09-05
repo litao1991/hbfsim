@@ -191,6 +191,7 @@ void StatsCollector::write(const std::string& output_dir,
           << "\nsuccessful_bytes," << successful_bytes_
           << "\nfailed_requests," << failed_requests_
           << "\nprogram_failures," << program_failures_
+          << "\nprogram_failure_notices," << program_failure_notices_
           << "\ncorrected_reads," << corrected_reads_
           << "\nuncorrectable_reads," << uncorrectable_reads_
           << "\nread_retries," << read_retries_

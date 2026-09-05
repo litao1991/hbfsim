@@ -7,9 +7,8 @@ namespace hbfsim {
 
 AddressMapper::AddressMapper(const Config& config) : config_(config) {
   config_.validate();
-  const auto total_planes = static_cast<std::uint64_t>(config_.stacks) *
-                            config_.dies_per_stack * config_.planes_per_die;
-  frontiers_.assign(static_cast<std::size_t>(total_planes), 0);
+  if (config_.mapping_policy == MappingPolicy::HostManaged)
+    stripes_ = std::make_unique<StripeMappingTable>(config_);
 }
 
 std::uint32_t AddressMapper::flat_plane(const PhysicalAddr& a) const {
@@ -59,65 +58,54 @@ PhysicalAddr AddressMapper::base_map(std::uint64_t lpn) const {
 }
 
 PhysicalAddr AddressMapper::map_read(std::uint64_t lpn) const {
-  if (const auto it = l2p_.find(lpn); it != l2p_.end()) return it->second;
+  if (stripes_) {
+    if (const auto mapped = stripes_->lookup(lpn)) return *mapped;
+    if (const auto active = stripes_->active_stripe(lpn)) {
+      const auto& descriptor = stripes_->descriptor(*active);
+      const auto slot = static_cast<std::uint32_t>(
+          lpn - descriptor.logical_base_lpn);
+      return stripes_->address_for(*active, slot);
+    }
+  }
   return base_map(lpn);
 }
 
 PhysicalAddr AddressMapper::placement(std::uint64_t lpn) const {
+  if (stripes_) return stripes_->preview_program(lpn);
   return base_map(lpn);
 }
 
 PhysicalAddr AddressMapper::preview_write(std::uint64_t lpn) const {
-  PhysicalAddr target = base_map(lpn);
-  if (config_.mapping_policy != MappingPolicy::HostManaged) return target;
-  const auto page_number = frontiers_.at(flat_plane(target));
-  const std::uint64_t capacity =
-      static_cast<std::uint64_t>(config_.blocks_per_plane) *
-      config_.pages_per_block;
-  if (page_number >= capacity)
-    throw std::runtime_error("host-managed write frontier exhausted a plane");
-  target.block = static_cast<std::uint32_t>(page_number / config_.pages_per_block);
-  target.page = static_cast<std::uint32_t>(page_number % config_.pages_per_block);
-  return target;
-}
-
-PhysicalAddr AddressMapper::allocate_host_managed(std::uint64_t lpn) {
-  PhysicalAddr target = base_map(lpn);
-  const auto index = flat_plane(target);
-  const auto page_number = frontiers_.at(index)++;
-  const std::uint64_t capacity = static_cast<std::uint64_t>(config_.blocks_per_plane) * config_.pages_per_block;
-  if (page_number >= capacity) throw std::runtime_error("host-managed write frontier exhausted a plane");
-  target.block = static_cast<std::uint32_t>(page_number / config_.pages_per_block);
-  target.page = static_cast<std::uint32_t>(page_number % config_.pages_per_block);
-  return target;
+  return stripes_ ? stripes_->preview_program(lpn) : base_map(lpn);
 }
 
 PhysicalAddr AddressMapper::prepare_write(std::uint64_t lpn) {
-  if (config_.mapping_policy == MappingPolicy::HostManaged) return allocate_host_managed(lpn);
+  if (stripes_) return stripes_->reserve_program(lpn);
   return base_map(lpn);
 }
 
 void AddressMapper::commit_write(std::uint64_t lpn, const PhysicalAddr& paddr) {
-  if (config_.mapping_policy == MappingPolicy::HostManaged) l2p_[lpn] = paddr;
+  if (stripes_) stripes_->commit_program(lpn, paddr);
+}
+
+ProgramFailureNotice AddressMapper::fail_write(
+    std::uint64_t lpn, const PhysicalAddr& paddr) {
+  if (!stripes_)
+    return {{}, 0, paddr, 0};
+  return stripes_->fail_program(lpn, paddr);
 }
 
 std::optional<PhysicalAddr> AddressMapper::lookup(std::uint64_t lpn) const {
-  if (const auto it = l2p_.find(lpn); it != l2p_.end()) return it->second;
+  if (stripes_) return stripes_->lookup(lpn);
   return std::nullopt;
 }
 
 void AddressMapper::on_erase(const PhysicalAddr& block_addr) {
-  const auto index = flat_plane(block_addr);
-  const auto block_begin = static_cast<std::uint64_t>(block_addr.block) * config_.pages_per_block;
-  const auto block_end = block_begin + config_.pages_per_block;
-  if (config_.mapping_policy == MappingPolicy::HostManaged && frontiers_.at(index) >= block_begin && frontiers_.at(index) <= block_end)
-    frontiers_.at(index) = block_begin;
-  for (auto it = l2p_.begin(); it != l2p_.end();) {
-    const auto& p = it->second;
-    if (p.stack == block_addr.stack && p.die == block_addr.die && p.plane == block_addr.plane && p.block == block_addr.block)
-      it = l2p_.erase(it);
-    else ++it;
-  }
+  if (stripes_) stripes_->on_erase(block_addr);
+}
+
+bool AddressMapper::validate_generation(const PhysicalAddr& paddr) const {
+  return !stripes_ || stripes_->validate_generation(paddr);
 }
 
 }  // namespace hbfsim

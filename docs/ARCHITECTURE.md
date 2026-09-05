@@ -1,4 +1,4 @@
-# HBFSim v0.1.1 架构设计
+# HBFSim v0.2.0 架构设计
 
 ## 1. 目标与范围
 
@@ -40,7 +40,8 @@ flowchart LR
 | `src/config.cpp` | YAML 子集解析、单位解析和配置合法性校验 |
 | `src/trace.cpp` | `IRequestSource` 流式接口、CSV 逐条读取和时间戳校验 |
 | `src/event_queue.cpp` | 确定性事件优先队列 |
-| `src/mapper.cpp` | LPN 到 PPA 的映射、Host-managed frontier 和 L2P 提交 |
+| `src/mapper.cpp` | Mapping policy 选择以及 Simulator 到条带映射的适配 |
+| `src/stripe_mapping.cpp` | Host-managed 条带分配、隐式双向映射、位图、generation 和原子 remap |
 | `src/link.cpp` | 独立 Host 路由、全双工 HostInterface、显式端口/总带宽 DataFabric |
 | `src/reliability.cpp` | Program failure、Poisson 位错误、ECC 与 Retry 抽样 |
 | `src/scheduler.cpp` | Plane 队列、ready 判定、读优先、防饥饿、Multi-plane、Cache、Suspend/Resume |
@@ -106,7 +107,7 @@ sequenceDiagram
     P-->>Host: Commit L2P or report failure
 ```
 
-Host-managed 写入在真正开始 Program 时分配物理页，成功完成后才提交 L2P。覆盖写成功后旧 PPA 转为 `INVALID`；失败写消耗顺序编程位置，但旧 L2P 保持不变。
+Host-managed 写入在 Host 命令拆分阶段按照 LPN 顺序预留物理 slot，使多个并发在途写仍保持确定的条带顺序；Program 成功后设置 `valid_bitmap`，失败后设置 `failed_bitmap` 并产生 Host 可见的 `ProgramFailureNotice`。覆盖写、跳写和对非 `OPEN` 条带继续写入都会被拒绝。
 
 ### 5.2 Read 路径
 
@@ -192,7 +193,18 @@ Program/Erase active
 
 ## 9. v0.2 Host-managed 条带映射
 
-v0.2 不采用传统逐 Page Reverse Mapping，而是在上层保证逻辑地址和物理地址均按固定条带顺序写入的前提下，使用条带描述符和可逆交织公式完成 LPN/PPA 双向计算。正常路径只保存 `logical_base_lpn`、物理条带身份、`generation`、写入 frontier 和状态 bitmap；跳写、部分迁移等偏离规则的情况才按需分配稀疏异常映射。
+v0.2 不采用传统逐 Page Reverse Mapping，而是在上层保证逻辑地址和物理地址均按固定条带顺序写入的前提下，使用 `StripeMappingTable`、条带描述符和可逆交织公式完成 LPN/PPA 双向计算。正常路径只保存 `logical_base_lpn`、物理条带身份、`generation`、写入 frontier 和状态 bitmap；物理条带由所有 Lane 上相同 Block index 的 Block 组成。
+
+当前已经实现：
+
+- 对齐条带分配和 replacement 分配；
+- `slot → PPA` 与 `PPA → slot/LPN` 的 O(1) 双向公式；
+- `VALID/INVALID/FAILED/HOLE` lazy bitmap；
+- 严格顺序 slot 预留、无覆盖写以及失败仍消耗 slot；
+- `OPEN/SEALED/DEGRADED/MIGRATING/STALE/ERASING/FREE` 生命周期；
+- `BEGIN_MIGRATION/REMAP_COMMIT/ABORT_MIGRATION` 的原子元数据语义；
+- 整条带多 Lane Erase，以及复用时 generation 递增；
+- 访问 generation 校验和 Program Failure Notice。
 
 Program Failure 和 GC 均由 Host 感知并主动发起数据 Copy。目标条带完成并 Seal 之前，旧条带保持 ACTIVE；只有 `REMAP_COMMIT` 能原子切换权威映射。完整设计见 [HOST_MANAGED_STRIPE_MAPPING.md](HOST_MANAGED_STRIPE_MAPPING.md)。
 
@@ -200,7 +212,7 @@ Program Failure 和 GC 均由 Host 感知并主动发起数据 Copy。目标条�
 
 建议后续按以下边界扩展：
 
-- Host-managed lifecycle：增加 StripeAllocator、StripeMappingTable、RecoveryManager 和 HostGcManager；
+- Host-managed data movement：在已实现的 `StripeMappingTable` 上增加 RecoveryManager 和 HostGcManager，并把 Copy 拆成真实 Read/Fabric/Program 事务；
 - Wear leveling：使用 `erase_count` 驱动 block 选择；
 - Retention/Read disturb：在 ReliabilityModel 中根据时间和读次数动态计算 RBER；
 - Thermal：根据 Stack 功耗状态动态缩放时序；
@@ -214,4 +226,4 @@ Program Failure 和 GC 均由 Host 感知并主动发起数据 Copy。目标条�
 - ECC 只反映纠错能力和延迟结果，不模拟编码器面积与能耗；
 - Suspend/Resume 不模拟模拟电压恢复细节；
 - `tCCS/tADL/tWHR` 是资源可用时间约束，不是引脚波形仿真。
-- 条带级隐式映射、Host Recovery 和 Host GC 是已确定的 v0.2 设计，尚未计入 v0.1.1 可执行能力。
+- 条带级隐式映射和控制面生命周期已经进入 v0.2.0；Recovery/GC 的自动事务编排、extent/sparse 写入接口和完整统计仍未实现。

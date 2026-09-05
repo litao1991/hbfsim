@@ -201,20 +201,34 @@ void Simulator::split_request(Request& request) {
   const auto first_lpn = request.logical_addr / config_.page_size;
   if (request.op == OpType::Erase || request.op == OpType::Refresh) {
     const auto address = mapper_.map_read(first_lpn);
-    SubRequest sub;
-    sub.id = next_subrequest_id_++;
-    sub.parent_id = request.id;
-    sub.op = request.op;
-    sub.source = TransactionSource::Maintenance;
-    sub.lpn = first_lpn;
-    sub.paddr = address;
-    sub.arrival_time = now_;
-    sub.host_route = request.host_route;
-    sub.latency.host_command_wait_ns = request.host_command_wait_ns;
-    sub.latency.host_command_service_ns = request.host_command_service_ns;
-    subrequests_.emplace(sub.id, sub);
-    ++request.pending_subreqs;
-    schedule(now_, EventType::SubreqReady, request.id, sub.id);
+    const auto add_subrequest = [&](const PhysicalAddr& paddr) {
+      SubRequest sub;
+      sub.id = next_subrequest_id_++;
+      sub.parent_id = request.id;
+      sub.op = request.op;
+      sub.source = TransactionSource::Maintenance;
+      sub.lpn = first_lpn;
+      sub.paddr = paddr;
+      sub.arrival_time = now_;
+      sub.host_route = request.host_route;
+      sub.latency.host_command_wait_ns = request.host_command_wait_ns;
+      sub.latency.host_command_service_ns = request.host_command_service_ns;
+      subrequests_.emplace(sub.id, sub);
+      ++request.pending_subreqs;
+      schedule(now_, EventType::SubreqReady, request.id, sub.id);
+    };
+    if (request.op == OpType::Erase && mapper_.stripe_mapping()) {
+      const auto active = mapper_.stripe_mapping()->active_stripe(first_lpn);
+      if (!active) {
+        add_subrequest(address);
+      } else {
+        for (std::uint32_t lane = 0;
+             lane < mapper_.stripe_mapping()->stripe_width(); ++lane)
+          add_subrequest(mapper_.stripe_mapping()->address_for(*active, lane));
+      }
+    } else {
+      add_subrequest(address);
+    }
     return;
   }
 
@@ -226,7 +240,7 @@ void Simulator::split_request(Request& request) {
     const auto bytes = std::min<std::uint64_t>(
         remaining, config_.page_size - first_offset);
     PhysicalAddr address = request.op == OpType::Write
-                               ? mapper_.placement(lpn)
+                               ? mapper_.prepare_write(lpn)
                                : mapper_.map_read(lpn);
     address.offset = first_offset;
     if (request.op == OpType::Read &&

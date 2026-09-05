@@ -1,6 +1,6 @@
 # HBFSim 设计文档
 
-本目录记录 HBFSim v0.1.1 的架构、模型语义和实验方法。文档以当前代码实现为准。
+本目录记录 HBFSim v0.2.0 的架构、模型语义和实验方法。文档以当前代码实现为准。
 
 ## 文档索引
 
@@ -8,7 +8,7 @@
 - [MEDIA_AND_TIMING_MODEL.md](MEDIA_AND_TIMING_MODEL.md)：Page/Block 状态机、NAND 时序、可靠性与 ECC 模型。
 - [EXPERIMENT_GUIDE.md](EXPERIMENT_GUIDE.md)：构建运行、配置项、trace 格式、统计指标与实验建议。
 - [V0.1.1_OPTIMIZATION.md](V0.1.1_OPTIMIZATION.md)：本轮架构收敛内容、兼容性和后续边界。
-- [HOST_MANAGED_STRIPE_MAPPING.md](HOST_MANAGED_STRIPE_MAPPING.md)：v0.2 Host-managed 顺序条带、隐式 Reverse Mapping、失败恢复和主动 GC 设计。
+- [HOST_MANAGED_STRIPE_MAPPING.md](HOST_MANAGED_STRIPE_MAPPING.md)：v0.2 Host-managed 顺序条带、隐式 Reverse Mapping、当前实现状态、失败恢复和主动 GC 设计。
 
 ## 设计定位
 

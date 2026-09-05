@@ -293,6 +293,8 @@ void Simulator::begin_data_in(std::uint64_t id, SimTime now, bool cached) {
 
 void Simulator::issue(std::uint64_t id, SimTime now, bool shared_command) {
   auto& sub = subrequests_.at(id);
+  if (sub.op != OpType::Write && !mapper_.validate_generation(sub.paddr))
+    throw std::runtime_error("STALE_GENERATION");
   auto& target = plane(sub.paddr);
   if (sub.op == OpType::Read) {
     if (target.reads.empty() || target.reads.front() != id)
@@ -386,12 +388,8 @@ void Simulator::start_program(std::uint64_t id, SimTime now,
   if (now > sub.ready_time)
     sub.latency.nand_command_wait_ns += now - sub.ready_time;
   sub.old_paddr = mapper_.lookup(sub.lpn);
-  const auto old_plane = plane_index(sub.paddr);
-  const auto offset = sub.paddr.offset;
-  sub.paddr = mapper_.prepare_write(sub.lpn);
-  sub.paddr.offset = offset;
-  if (plane_index(sub.paddr) != old_plane)
-    throw std::runtime_error("write placement changed plane before program");
+  if (!mapper_.validate_generation(sub.paddr))
+    throw std::runtime_error("STALE_GENERATION");
   auto& target = plane(sub.paddr);
   auto& block = target.blocks.at(sub.paddr.block);
   if (block.bad || block.state == BlockState::Bad ||
@@ -433,9 +431,6 @@ void Simulator::dispatch_ready_programs(std::uint32_t stack, SimTime now) {
     progress = false;
     for (auto it = ready_queue.begin(); it != ready_queue.end(); ++it) {
       auto& sub = subrequests_.at(*it);
-      const auto offset = sub.paddr.offset;
-      sub.paddr = mapper_.preview_write(sub.lpn);
-      sub.paddr.offset = offset;
       auto& target = plane(sub.paddr);
       if (target.active_subrequest || target.suspended_subrequest ||
           target.data_register_busy)
@@ -462,9 +457,6 @@ void Simulator::dispatch_ready_programs(std::uint32_t stack, SimTime now) {
              peer != ready_queue.end() &&
              issued < config_.max_multi_plane_width;) {
           auto& peer_sub = subrequests_.at(*peer);
-          const auto peer_offset = peer_sub.paddr.offset;
-          peer_sub.paddr = mapper_.preview_write(peer_sub.lpn);
-          peer_sub.paddr.offset = peer_offset;
           auto& peer_plane = plane(peer_sub.paddr);
           auto& peer_block =
               peer_plane.blocks.at(peer_sub.paddr.block);

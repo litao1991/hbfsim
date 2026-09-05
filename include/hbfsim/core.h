@@ -5,6 +5,7 @@
 #include <deque>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -24,6 +25,16 @@ enum class MappingPolicy { Linear, FineStripe, BurstStripe, HostManaged };
 enum class TransactionSource { User, Mapping, Maintenance, GarbageCollection, Recovery };
 enum class BlockState { Free, Open, Closed, Erasing, Bad };
 enum class PageState { Erased, Reading, Programming, Valid, Invalid, Failed };
+enum class StripeState {
+  Free,
+  Open,
+  Sealed,
+  Degraded,
+  Migrating,
+  Stale,
+  Erasing,
+  Bad,
+};
 enum class ReadErrorStatus { Clean, Corrected, Uncorrectable };
 enum class InitializationMode { Empty, ImageLoaded, Preconditioned };
 enum class HostLinkDirection { Command, HostToDevice, DeviceToHost };
@@ -94,6 +105,111 @@ struct PhysicalAddr {
   std::uint32_t page = 0;
   std::uint64_t offset = 0;
   std::uint32_t data_port = 0;
+  std::uint64_t physical_stripe =
+      std::numeric_limits<std::uint64_t>::max();
+  std::uint32_t generation = 0;
+};
+
+struct StripeId {
+  std::uint64_t physical_id = std::numeric_limits<std::uint64_t>::max();
+  std::uint32_t generation = 0;
+
+  bool valid() const {
+    return physical_id != std::numeric_limits<std::uint64_t>::max() &&
+           generation != 0;
+  }
+  friend bool operator==(const StripeId&, const StripeId&) = default;
+};
+
+class LazyBitmap {
+ public:
+  bool test(std::uint32_t bit) const;
+  void set(std::uint32_t bit, std::uint32_t bit_count);
+  void clear(std::uint32_t bit);
+  bool any() const;
+  void reset() { words_.clear(); }
+  std::size_t allocated_words() const { return words_.size(); }
+
+ private:
+  std::vector<std::uint64_t> words_;
+};
+
+struct ExtentRun {
+  std::uint32_t physical_start_slot = 0;
+  std::uint32_t slot_count = 0;
+  std::uint64_t logical_base_lpn = 0;
+};
+
+struct StripeDescriptor {
+  StripeId id;
+  std::uint64_t logical_base_lpn = 0;
+  std::uint32_t next_program_slot = 0;
+  std::uint32_t valid_slots = 0;
+  std::uint32_t reserved_programs = 0;
+  std::uint32_t erased_lanes = 0;
+  StripeState state = StripeState::Free;
+  LazyBitmap valid_bitmap;
+  LazyBitmap invalid_bitmap;
+  LazyBitmap failed_bitmap;
+  LazyBitmap hole_bitmap;
+  LazyBitmap reserved_bitmap;
+  LazyBitmap erased_lane_bitmap;
+  std::vector<ExtentRun> extent_runs;
+  std::unordered_map<std::uint32_t, std::uint64_t> exceptions;
+};
+
+struct ProgramFailureNotice {
+  StripeId stripe;
+  std::uint32_t failed_slot = 0;
+  PhysicalAddr failed_ppa;
+  std::uint32_t committed_slots = 0;
+};
+
+class StripeMappingTable {
+ public:
+  explicit StripeMappingTable(const Config& config);
+
+  std::uint32_t stripe_width() const { return stripe_width_; }
+  std::uint32_t stripe_capacity() const { return stripe_capacity_; }
+  StripeId allocate(std::uint64_t logical_base_lpn);
+  StripeId allocate_replacement(std::uint64_t logical_base_lpn);
+  PhysicalAddr preview_program(std::uint64_t lpn) const;
+  PhysicalAddr reserve_program(std::uint64_t lpn);
+  PhysicalAddr reserve_program(const StripeId& destination,
+                               std::uint64_t lpn);
+  void commit_program(std::uint64_t lpn, const PhysicalAddr& paddr);
+  ProgramFailureNotice fail_program(std::uint64_t lpn,
+                                    const PhysicalAddr& paddr);
+  void invalidate(std::uint64_t lpn);
+  std::optional<PhysicalAddr> lookup(std::uint64_t lpn) const;
+  std::optional<std::uint64_t> reverse_lookup(
+      const PhysicalAddr& paddr, std::uint32_t expected_generation) const;
+  PhysicalAddr address_for(const StripeId& stripe,
+                           std::uint32_t slot) const;
+  std::uint32_t slot_of(const PhysicalAddr& paddr) const;
+  void seal(const StripeId& stripe);
+  void begin_migration(const StripeId& source);
+  void remap_commit(const StripeId& source, const StripeId& destination);
+  void abort_migration(const StripeId& destination);
+  void on_erase(const PhysicalAddr& block_addr);
+  bool validate_generation(const PhysicalAddr& paddr) const;
+  const StripeDescriptor& descriptor(const StripeId& stripe) const;
+  std::optional<StripeId> active_stripe(std::uint64_t lpn) const;
+  std::size_t active_mapping_count() const { return active_.size(); }
+
+ private:
+  StripeId allocate_internal(std::uint64_t logical_base_lpn,
+                             bool publish);
+  StripeDescriptor& mutable_descriptor(const StripeId& stripe);
+  std::uint64_t logical_base(std::uint64_t lpn) const;
+  PhysicalAddr preview_for(const StripeId& stripe, std::uint64_t lpn) const;
+  const Config& config_;
+  std::uint32_t stripe_width_ = 0;
+  std::uint32_t stripe_capacity_ = 0;
+  std::vector<StripeDescriptor> descriptors_;
+  std::vector<std::uint32_t> generations_;
+  std::deque<std::uint64_t> free_stripes_;
+  std::map<std::uint64_t, StripeId> active_;
 };
 
 struct HostRoute {
@@ -190,16 +306,19 @@ class AddressMapper {
   PhysicalAddr map_read(std::uint64_t lpn) const;
   PhysicalAddr prepare_write(std::uint64_t lpn);
   void commit_write(std::uint64_t lpn, const PhysicalAddr& paddr);
+  ProgramFailureNotice fail_write(std::uint64_t lpn,
+                                  const PhysicalAddr& paddr);
   std::optional<PhysicalAddr> lookup(std::uint64_t lpn) const;
   void on_erase(const PhysicalAddr& block_addr);
   std::uint32_t flat_plane(const PhysicalAddr& addr) const;
+  StripeMappingTable* stripe_mapping() { return stripes_.get(); }
+  const StripeMappingTable* stripe_mapping() const { return stripes_.get(); }
+  bool validate_generation(const PhysicalAddr& paddr) const;
 
  private:
   PhysicalAddr base_map(std::uint64_t lpn) const;
-  PhysicalAddr allocate_host_managed(std::uint64_t lpn);
   const Config& config_;
-  std::unordered_map<std::uint64_t, PhysicalAddr> l2p_;
-  std::vector<std::uint64_t> frontiers_;
+  std::unique_ptr<StripeMappingTable> stripes_;
 };
 
 class LinkResource {
@@ -392,7 +511,10 @@ class StatsCollector {
   void record_read_retry() { ++read_retries_; }
   void record_corrected_read() { ++corrected_reads_; }
   void record_uncorrectable_read() { ++uncorrectable_reads_; }
-  void record_program_failure() { ++program_failures_; }
+  void record_program_failure() {
+    ++program_failures_;
+    ++program_failure_notices_;
+  }
   void set_topology(std::uint32_t stacks, std::uint32_t dies_per_stack,
                     std::uint32_t planes_per_die,
                     std::uint32_t ports_per_stack,
@@ -407,6 +529,9 @@ class StatsCollector {
   std::uint64_t corrected_reads() const { return corrected_reads_; }
   std::uint64_t uncorrectable_reads() const { return uncorrectable_reads_; }
   std::uint64_t program_failures() const { return program_failures_; }
+  std::uint64_t program_failure_notices() const {
+    return program_failure_notices_;
+  }
 
  private:
   struct Interval { SimTime start = 0; SimTime end = 0; };
@@ -428,6 +553,7 @@ class StatsCollector {
   std::uint64_t corrected_reads_ = 0;
   std::uint64_t uncorrectable_reads_ = 0;
   std::uint64_t program_failures_ = 0;
+  std::uint64_t program_failure_notices_ = 0;
   std::uint32_t stacks_ = 0;
   std::uint32_t dies_per_stack_ = 0;
   std::uint32_t planes_per_die_ = 0;
@@ -464,6 +590,9 @@ class Simulator {
   BlockState block_state(const PhysicalAddr& paddr) const;
   SimTime block_ready_at(const PhysicalAddr& paddr) const;
   SimTime die_ready_at(const PhysicalAddr& paddr) const;
+  const std::vector<ProgramFailureNotice>& program_failure_notices() const {
+    return program_failure_notices_;
+  }
 
  private:
   void schedule(SimTime when, EventType type, std::uint64_t request_id,
@@ -532,6 +661,7 @@ class Simulator {
   std::vector<DataFabric> fabrics_;
   std::unordered_map<std::uint64_t, PageState> transient_page_states_;
   std::unordered_set<std::uint64_t> erased_blocks_;
+  std::vector<ProgramFailureNotice> program_failure_notices_;
   std::array<std::uint64_t, 4> queue_depth_{};
   SimulationPhase phase_ = SimulationPhase::Initialize;
   bool streaming_submission_ = false;

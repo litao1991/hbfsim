@@ -80,11 +80,13 @@ int main() {
     hbfsim::Simulator sim(c);
     sim.submit({0, hbfsim::OpType::Write, 0, 100, 0});
     sim.submit({100, hbfsim::OpType::Write, 0, 100, 0});
-    sim.run();
-    CHECK(sim.page_state({0, 0, 0, 0, 0}) ==
-           hbfsim::PageState::Invalid);
-    CHECK(sim.page_state({0, 0, 0, 0, 1}) ==
-           hbfsim::PageState::Valid);
+    bool rejected_overwrite = false;
+    try {
+      sim.run();
+    } catch (const std::runtime_error&) {
+      rejected_overwrite = true;
+    }
+    CHECK(rejected_overwrite);
   }
 
   {
@@ -176,11 +178,11 @@ int main() {
     hbfsim::Simulator sim(c);
     sim.submit({0, hbfsim::OpType::Write, 0, 100, 0});
     sim.submit({10, hbfsim::OpType::Erase, 0, 0, 0});
-    sim.submit({20, hbfsim::OpType::Write, 0, 100, 0});
-    sim.submit({300, hbfsim::OpType::Read, 0, 100, 0});
+    sim.submit({250, hbfsim::OpType::Write, 0, 100, 0});
+    sim.submit({500, hbfsim::OpType::Read, 0, 100, 0});
     sim.run();
     CHECK(sim.stats().completed_requests() == 4);
-    CHECK(sim.page_state({0, 0, 0, 0, 0}) ==
+    CHECK(sim.page_state({0, 0, 0, 1, 0}) ==
            hbfsim::PageState::Valid);
   }
 

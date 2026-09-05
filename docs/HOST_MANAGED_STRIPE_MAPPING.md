@@ -2,7 +2,9 @@
 
 ## 1. 文档状态
 
-本文定义 HBFSim v0.2 的 Host-managed 映射、Program Failure 恢复和主动 GC 语义。它是后续实现契约，不代表 v0.1.1 已经具备这些可执行能力。
+本文定义 HBFSim v0.2 的 Host-managed 映射、Program Failure 恢复和主动 GC 语义，也是实现状态清单。
+
+截至 v0.2.0，阶段 A、阶段 B 的核心数据结构和控制面已经实现，阶段 C 已实现 Program Failure Notice 与失败 slot 状态提交。Recovery/GC 的定时数据复制编排，以及阶段 E 的 extent/sparse 写入接口仍在后续阶段；这些能力不会用零延迟元数据操作代替。
 
 设计目标是利用上层提供的严格顺序约束，把传统逐 Page L2P/P2L 表收敛为条带级元数据，同时仍然准确模拟物理 Page 状态、数据搬运流量、资源竞争和失败恢复延迟。
 
@@ -61,7 +63,7 @@ lpn = L0 + s
 
 ## 4. 核心元数据
 
-计划使用以下概念结构：
+当前实现使用以下概念结构（另有内部 `reserved_bitmap` 和 `erased_lane_bitmap` 管理在途 Program 与多 Lane Erase）：
 
 ```cpp
 enum class StripeState {
@@ -135,7 +137,7 @@ NandMediaModel
 - `HostGcManager` 选择 Victim，生成 Copy、Commit 和 Erase；
 - `NandMediaModel` 不替 Host 选择新位置，也不静默修改逻辑映射。
 
-当前 `AddressMapper` 中的逐页 L2P 和每 Plane frontier 将逐步被上述组件替代。非 Host-managed mapping policy 可以继续保留现有确定性 placement。
+当前 `AddressMapper` 中的逐页 L2P 和每 Plane frontier 已由 `StripeMappingTable` 替代。非 Host-managed mapping policy 继续保留现有确定性 placement。
 
 ## 6. 正常写入路径
 
@@ -144,21 +146,22 @@ ALLOC_STRIPE(logical_base)
         ↓
 Stripe = OPEN, next_slot = 0
         ↓
-PROGRAM(slot = next_slot)
+Host 接受 PROGRAM(slot = next_slot)
         ↓
 检查 generation 和顺序
         ↓
+reserved[slot] = 1, next_slot++
+        ↓
 Program success
         ↓
-valid[slot] = 1
-next_slot++
+reserved[slot] = 0, valid[slot] = 1
         ↓
 写满或 Host 显式 SEAL
         ↓
 Stripe = SEALED
 ```
 
-Program 的准入条件：
+slot 在 Host 命令拆分阶段预留，而不是等到 NAND 阵列开始执行时才分配。这样多个并发在途写仍能按 Host 提交顺序获得唯一 PPA。Program 的准入条件：
 
 ```text
 command.stripe_generation == descriptor.generation
@@ -190,8 +193,8 @@ PPA + expected generation
 Program Failure 发生时：
 
 ```text
+reserved_bitmap[slot] = 0
 failed_bitmap[slot] = 1
-next_program_slot++
 Stripe = DEGRADED
 当前逻辑映射保持不变
 ```
@@ -368,34 +371,37 @@ Copy 不是零延迟元数据命令，而是由 Read/Data Move/Program 事务组
 
 ### 阶段 A：条带几何和元数据
 
-- 定义 StripeId、StripeState、StripeDescriptor；
-- 实现正向/反向 slot 公式；
-- 加入 generation 校验和顺序 Program 不变量。
+- [x] 定义 StripeId、StripeState、StripeDescriptor；
+- [x] 实现正向/反向 slot 公式；
+- [x] 加入 generation 校验和顺序 Program 不变量。
 
 ### 阶段 B：映射提交
 
-- 实现 StripeAllocator 和 StripeMappingTable；
-- 增加 ALLOC/SEAL/REMAP_COMMIT；
-- 从 Host-managed `AddressMapper` 移除逐 Page L2P/frontier。
+- [x] 实现条带分配和 StripeMappingTable；
+- [x] 增加 ALLOC/SEAL/BEGIN_MIGRATION/REMAP_COMMIT/ABORT；
+- [x] 从 Host-managed `AddressMapper` 移除逐 Page L2P/frontier。
 
 ### 阶段 C：Program Failure Recovery
 
-- 产生 Host 可见 failure notice；
-- 用 Recovery transaction 真实搬运数据；
-- 支持 destination failure、abort 和重新分配。
+- [x] 产生 Host 可见 failure notice；
+- [ ] 用 Recovery transaction 真实搬运数据；
+- [x] 支持 destination failure 状态、abort 和重新分配的控制面语义；
+- [ ] 在事件引擎中自动编排 destination failure 后的再次恢复。
 
 ### 阶段 D：Host GC
 
-- Host 选择 Victim；
-- 复制有效 slot 或 extent；
-- 原子 Commit 后 Erase source；
-- 补充写放大、恢复延迟和条带状态统计。
+- [ ] Host 选择 Victim；
+- [ ] 复制有效 slot 或 extent；
+- [x] 原子 Commit 与 source `STALE` 状态切换；
+- [x] 整 Stripe 多 Lane Erase；
+- [ ] 补充写放大、恢复延迟和条带状态统计。
 
 ### 阶段 E：退化映射
 
-- 按需支持 hole bitmap、ExtentRun 和 SparseExceptionMap；
-- 设置退化阈值和完整 P2L fallback；
-- 保证正常路径不承担异常路径的常驻内存成本。
+- [x] 提供 lazy hole bitmap、ExtentRun 和 SparseExceptionMap 数据结构；
+- [ ] 增加 hole/extent/sparse 的 Host 写入接口；
+- [ ] 设置退化阈值和完整 P2L fallback；
+- [x] 保证正常路径不承担异常路径的常驻内存成本。
 
 ## 17. 非目标
 

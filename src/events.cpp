@@ -184,9 +184,6 @@ void Simulator::handle(const Event& event) {
       auto& sub = subrequests_.at(event.subreq_id);
       auto& target = plane(sub.paddr);
       target.data_register_busy = false;
-      const auto offset = sub.paddr.offset;
-      sub.paddr = mapper_.preview_write(sub.lpn);
-      sub.paddr.offset = offset;
       sub.ready_time = now_ +
                        (config_.multi_plane_enabled
                             ? config_.multi_plane_setup_ns
@@ -220,6 +217,9 @@ void Simulator::handle(const Event& event) {
         block.state = block.next_program_page == config_.pages_per_block
                           ? BlockState::Closed
                           : BlockState::Open;
+        if (config_.mapping_policy == MappingPolicy::HostManaged)
+          program_failure_notices_.push_back(
+              mapper_.fail_write(sub.lpn, sub.paddr));
         sub.failed = true;
         if (is_measured(sub.parent_id))
           stats_.record_program_failure();
