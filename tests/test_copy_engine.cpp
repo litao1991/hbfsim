@@ -68,6 +68,11 @@ int main() {
     CHECK(simulator.active_copy_jobs() == 0);
     CHECK(simulator.stats().program_failures() == 1);
     CHECK(simulator.program_failure_notices().size() == 1);
+    CHECK(simulator.replay_plans().size() == 1);
+    const auto& replay = simulator.replay_plans().front();
+    CHECK(replay.failed_slot == 0);
+    CHECK(replay.committed_slots == 0);
+    CHECK(replay.replay_bytes == 100);
     CHECK(simulator.stats().remap_commits() == 1);
     CHECK(simulator.stats().completed_recovery_jobs() == 1);
     CHECK(simulator.stats().source_bytes(

@@ -43,6 +43,9 @@ class Simulator {
   const std::vector<ProgramFailureNotice>& program_failure_notices() const {
     return program_failure_notices_;
   }
+  const std::vector<ReplayPlan>& replay_plans() const {
+    return system_.replay_manager().plans();
+  }
   std::uint64_t start_host_gc(std::uint64_t logical_addr);
   std::uint64_t start_refresh(std::uint64_t logical_addr);
   void invalidate_host_page(std::uint64_t logical_addr);

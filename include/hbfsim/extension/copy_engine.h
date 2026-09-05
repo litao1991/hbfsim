@@ -48,6 +48,17 @@ struct PendingRecovery {
   bool measured = true;
 };
 
+// Host-facing recovery contract. The device records failed placement and the
+// live prefix; Host software owns payload reconstruction and replay timing.
+struct ReplayPlan {
+  std::uint64_t id = 0;
+  StripeId source_stripe;
+  std::uint32_t failed_slot = 0;
+  std::uint32_t committed_slots = 0;
+  PhysicalAddr failed_ppa;
+  std::uint64_t replay_bytes = 0;
+};
+
 class CopyEngine {
  public:
   std::uint64_t next_job_id() { return next_job_id_++; }
@@ -69,6 +80,23 @@ class CopyEngine {
   std::unordered_map<std::uint64_t, CopyJob> jobs_;
   std::vector<PendingRecovery> pending_recoveries_;
   std::uint64_t next_job_id_ = 0;
+};
+
+class HostReplayManager {
+ public:
+  const ReplayPlan& record(const ProgramFailureNotice& notice,
+                           std::uint64_t page_size) {
+    plans_.push_back({next_id_++, notice.stripe, notice.failed_slot,
+                      notice.committed_slots, notice.failed_ppa,
+                      static_cast<std::uint64_t>(notice.committed_slots + 1) *
+                          page_size});
+    return plans_.back();
+  }
+  const std::vector<ReplayPlan>& plans() const { return plans_; }
+
+ private:
+  std::vector<ReplayPlan> plans_;
+  std::uint64_t next_id_ = 0;
 };
 
 }  // namespace hbfsim

@@ -321,6 +321,7 @@ void Simulator::handle(const Event& event) {
         if (config_.mapping_policy == MappingPolicy::HostManaged) {
           failure_notice = system_.mapper().fail_write(sub.lpn, sub.paddr);
           program_failure_notices_.push_back(*failure_notice);
+          system_.replay_manager().record(*failure_notice, config_.page_size);
         }
         sub.failed = true;
         sub.status =
