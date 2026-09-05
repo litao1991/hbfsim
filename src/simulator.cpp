@@ -20,6 +20,10 @@ void bitmap_set(std::vector<std::uint64_t>& bitmap, std::uint32_t pages,
   bitmap.at(page / 64) |= 1ULL << (page % 64);
 }
 
+void bitmap_clear(std::vector<std::uint64_t>& bitmap, std::uint32_t page) {
+  if (!bitmap.empty()) bitmap.at(page / 64) &= ~(1ULL << (page % 64));
+}
+
 }  // namespace
 
 Simulator::Simulator(Config config)
@@ -163,6 +167,23 @@ SimTime Simulator::block_ready_at(const PhysicalAddr& address) const {
 SimTime Simulator::die_ready_at(const PhysicalAddr& address) const {
   const auto& state = die(address);
   return std::max(state.ready_at, state.command_ready_at);
+}
+
+void Simulator::invalidate_host_page(std::uint64_t logical_addr) {
+  auto* mapping = mapper_.stripe_mapping();
+  if (!mapping)
+    throw std::runtime_error("INVALIDATE_REQUIRES_HOST_MANAGED_MAPPING");
+  if (logical_addr % config_.page_size != 0)
+    throw std::invalid_argument("INVALIDATE_REQUIRES_PAGE_ALIGNMENT");
+  const auto lpn = logical_addr / config_.page_size;
+  const auto paddr = mapping->lookup(lpn);
+  if (!paddr) throw std::runtime_error("INVALIDATE_UNMAPPED_LPN");
+  mapping->invalidate(lpn);
+  auto& block = plane(*paddr).blocks.at(paddr->block);
+  bitmap_clear(block.valid_bitmap, paddr->page);
+  bitmap_set(block.invalid_bitmap, config_.pages_per_block, paddr->page);
+  --block.valid_pages;
+  ++block.invalid_pages;
 }
 
 void Simulator::set_transient_page_state(const PhysicalAddr& address,

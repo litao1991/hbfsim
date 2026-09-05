@@ -56,6 +56,9 @@ void Simulator::complete_subrequest(std::uint64_t id, SimTime now) {
   auto& sub = sub_it->second;
   sub.complete_time = now;
   const auto parent_id = sub.parent_id;
+  const auto copy_job_id = sub.copy_job_id;
+  const auto completed_op = sub.op;
+  const auto subrequest_failed = sub.failed;
   if (is_measured(parent_id))
     stats_.record_subrequest(sub);
   auto request_it = requests_.find(parent_id);
@@ -65,9 +68,13 @@ void Simulator::complete_subrequest(std::uint64_t id, SimTime now) {
   subrequests_.erase(sub_it);
   if (request_done) {
     request.complete_time = now;
-    if (request.measured)
+    const auto internal = request.internal;
+    if (request.measured && !internal)
       stats_.record_request(request);
     requests_.erase(request_it);
+    if (internal && copy_job_id)
+      handle_copy_completion(*copy_job_id, completed_op,
+                             subrequest_failed, now);
   }
 }
 
@@ -206,6 +213,7 @@ void Simulator::handle(const Event& event) {
                                   plane_index(sub.paddr),
                                   sub.array_active_since, now_);
       sub.latency.array_service_ns += now_ - sub.array_active_since;
+      std::optional<ProgramFailureNotice> failure_notice;
       if (reliability_.program_failed()) {
         clear_transient_page_state(sub.paddr);
         bitmap_set(block.failed_bitmap, config_.pages_per_block,
@@ -217,9 +225,10 @@ void Simulator::handle(const Event& event) {
         block.state = block.next_program_page == config_.pages_per_block
                           ? BlockState::Closed
                           : BlockState::Open;
-        if (config_.mapping_policy == MappingPolicy::HostManaged)
-          program_failure_notices_.push_back(
-              mapper_.fail_write(sub.lpn, sub.paddr));
+        if (config_.mapping_policy == MappingPolicy::HostManaged) {
+          failure_notice = mapper_.fail_write(sub.lpn, sub.paddr);
+          program_failure_notices_.push_back(*failure_notice);
+        }
         sub.failed = true;
         if (is_measured(sub.parent_id))
           stats_.record_program_failure();
@@ -235,7 +244,21 @@ void Simulator::handle(const Event& event) {
           std::max(die(sub.paddr).ready_at,
                    now_ + config_.t_whr_ns);
       const auto stack = sub.paddr.stack;
+      const auto source = sub.source;
+      const auto measured = is_measured(sub.parent_id);
       complete_subrequest(sub.id, now_);
+      if (failure_notice && source == TransactionSource::User &&
+          config_.auto_recovery_enabled) {
+        const auto duplicate = std::any_of(
+            pending_recoveries_.begin(), pending_recoveries_.end(),
+            [&](const auto& pending) {
+              return pending.source_stripe == failure_notice->stripe;
+            });
+        if (!duplicate)
+          pending_recoveries_.push_back(
+              {failure_notice->stripe, measured});
+      }
+      if (config_.auto_recovery_enabled) start_ready_recoveries(now_);
       dispatch_ready_programs(stack, now_);
       dispatch_stack(stack, now_);
       break;

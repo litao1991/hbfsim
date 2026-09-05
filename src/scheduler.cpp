@@ -6,6 +6,37 @@
 namespace hbfsim {
 namespace {
 
+std::size_t source_index(TransactionSource source) {
+  return static_cast<std::size_t>(source);
+}
+
+bool queues_empty(const Plane::SourceQueues& queues) {
+  return std::all_of(queues.begin(), queues.end(),
+                     [](const auto& queue) { return queue.empty(); });
+}
+
+Plane::SourceQueues& queues_for(Plane& plane, OpType op) {
+  if (op == OpType::Read) return plane.reads;
+  if (op == OpType::Write) return plane.writes;
+  if (op == OpType::Erase) return plane.erases;
+  return plane.refreshes;
+}
+
+int base_priority(const SubRequest& subrequest) {
+  if (subrequest.source == TransactionSource::Recovery &&
+      subrequest.critical)
+    return 0;
+  if (subrequest.source == TransactionSource::User &&
+      subrequest.op == OpType::Read)
+    return 1;
+  if (subrequest.source == TransactionSource::Recovery) return 2;
+  if (subrequest.source == TransactionSource::User ||
+      subrequest.source == TransactionSource::Mapping)
+    return 3;
+  if (subrequest.source == TransactionSource::Maintenance) return 4;
+  return 5;
+}
+
 bool bitmap_test(const std::vector<std::uint64_t>& bitmap,
                  std::uint32_t page) {
   const auto word = page / 64;
@@ -21,17 +52,19 @@ void Simulator::enqueue_subrequest(SubRequest& subrequest) {
   if (config_.multi_plane_enabled && subrequest.op != OpType::Write)
     subrequest.ready_time += config_.multi_plane_setup_ns;
   auto& target = plane(subrequest.paddr);
+  auto& source_queue =
+      queues_for(target, subrequest.op).at(source_index(subrequest.source));
   if (subrequest.op == OpType::Read) {
-    target.reads.push_back(subrequest.id);
+    source_queue.push_back(subrequest.id);
     ++queue_depth_[0];
   } else if (subrequest.op == OpType::Write) {
-    target.writes.push_back(subrequest.id);
+    source_queue.push_back(subrequest.id);
     ++queue_depth_[1];
   } else if (subrequest.op == OpType::Erase) {
-    target.erases.push_back(subrequest.id);
+    source_queue.push_back(subrequest.id);
     ++queue_depth_[2];
   } else {
-    target.refreshes.push_back(subrequest.id);
+    source_queue.push_back(subrequest.id);
     ++queue_depth_[3];
   }
   record_queue_depth();
@@ -42,28 +75,37 @@ void Simulator::enqueue_subrequest(SubRequest& subrequest) {
 
 std::optional<std::uint64_t> Simulator::choose_next(Plane& target,
                                                     SimTime now) const {
-  const auto oldest_non_read = [&]() {
-    std::optional<std::uint64_t> result;
-    const auto consider = [&](const std::deque<std::uint64_t>& queue) {
-      if (queue.empty()) return;
-      if (!result ||
-          subrequests_.at(queue.front()).enqueue_time <
-              subrequests_.at(*result).enqueue_time)
-        result = queue.front();
-    };
-    consider(target.writes);
-    consider(target.erases);
-    consider(target.refreshes);
-    return result;
+  std::optional<std::uint64_t> selected;
+  int selected_priority = 0;
+  const auto consider = [&](const Plane::SourceQueues& queues) {
+    for (const auto& queue : queues) {
+      if (queue.empty()) continue;
+      const auto id = queue.front();
+      const auto& candidate = subrequests_.at(id);
+      const auto waited = now - candidate.enqueue_time;
+      int priority = base_priority(candidate);
+      if (waited >= config_.source_aging_ns ||
+          (candidate.op != OpType::Read &&
+           ((candidate.source != TransactionSource::GarbageCollection &&
+             waited >= config_.write_starvation_ns) ||
+            target.consecutive_reads >= config_.max_consecutive_reads)))
+        priority = 0;
+      if (!selected || priority < selected_priority ||
+          (priority == selected_priority &&
+           (candidate.enqueue_time < subrequests_.at(*selected).enqueue_time ||
+            (candidate.enqueue_time ==
+                 subrequests_.at(*selected).enqueue_time &&
+             candidate.id < *selected)))) {
+        selected = id;
+        selected_priority = priority;
+      }
+    }
   };
-  const auto non_read = oldest_non_read();
-  if (target.reads.empty()) return non_read;
-  if (!non_read) return target.reads.front();
-  const auto& waiting = subrequests_.at(*non_read);
-  if (now - waiting.enqueue_time >= config_.write_starvation_ns ||
-      target.consecutive_reads >= config_.max_consecutive_reads)
-    return non_read;
-  return target.reads.front();
+  consider(target.reads);
+  consider(target.writes);
+  consider(target.erases);
+  consider(target.refreshes);
+  return selected;
 }
 
 SimTime Simulator::command_ready_time(const SubRequest& subrequest) const {
@@ -86,12 +128,18 @@ void Simulator::claim_command(const SubRequest& subrequest, SimTime now,
 }
 
 bool Simulator::try_suspend_for_read(Plane& target, SimTime now) {
-  if (!config_.suspend_resume_enabled || target.reads.empty() ||
+  if (!config_.suspend_resume_enabled || queues_empty(target.reads) ||
       !target.active_subrequest || target.suspend_pending ||
       target.data_register_busy)
     return false;
   auto& active = subrequests_.at(*target.active_subrequest);
   if (active.op != OpType::Write && active.op != OpType::Erase) return false;
+  const auto next = choose_next(target, now);
+  if (!next || subrequests_.at(*next).op != OpType::Read) return false;
+  const auto& waiting = subrequests_.at(*next);
+  if (base_priority(waiting) > base_priority(active) &&
+      now - waiting.enqueue_time < config_.source_aging_ns)
+    return false;
   if (active.array_completion_time <= now) return false;
   const auto command_ready = die(active.paddr).command_ready_at;
   if (command_ready > now) {
@@ -111,8 +159,8 @@ bool Simulator::try_suspend_for_read(Plane& target, SimTime now) {
 
 bool Simulator::try_resume(Plane& target, SimTime now) {
   if (!target.suspended_subrequest || target.busy) return false;
-  if (!target.reads.empty() &&
-      target.consecutive_reads < config_.max_consecutive_reads)
+  if (const auto next = choose_next(target, now);
+      next && subrequests_.at(*next).op == OpType::Read)
     return false;
   auto& sub = subrequests_.at(*target.suspended_subrequest);
   const auto ready = command_ready_time(sub);
@@ -151,21 +199,25 @@ bool Simulator::try_resume(Plane& target, SimTime now) {
 
 bool Simulator::try_issue_cached_write(Plane& target, SimTime now) {
   if (!config_.cache_program_enabled || target.data_register_busy ||
-      target.cached_write || target.writes.empty() ||
+      target.cached_write || queues_empty(target.writes) ||
       !target.active_subrequest)
     return false;
   const auto& active = subrequests_.at(*target.active_subrequest);
   if (active.op != OpType::Write || active.suspended) return false;
-  auto& next = subrequests_.at(target.writes.front());
   const auto scheduled = choose_next(target, now);
-  if (!scheduled || *scheduled != next.id) return false;
+  if (!scheduled) return false;
+  auto& next = subrequests_.at(*scheduled);
+  if (next.op != OpType::Write) return false;
   const auto ready = std::max({next.ready_time, die(next.paddr).ready_at,
                                die(next.paddr).command_ready_at});
   if (ready > now) {
     schedule_dispatch_wake(next.paddr.stack, ready);
     return false;
   }
-  target.writes.pop_front();
+  auto& queue = target.writes.at(source_index(next.source));
+  if (queue.empty() || queue.front() != next.id)
+    throw std::logic_error("write source queue invariant violated");
+  queue.pop_front();
   --queue_depth_[1];
   record_queue_depth();
   target.cached_write = next.id;
@@ -200,12 +252,11 @@ void Simulator::dispatch_stack(std::uint32_t stack, SimTime now) {
 
       std::optional<std::uint64_t> next;
       if (candidate.suspended_subrequest) {
-        if (candidate.reads.empty() ||
-            candidate.consecutive_reads >= config_.max_consecutive_reads) {
+        next = choose_next(candidate, now);
+        if (!next || subrequests_.at(*next).op != OpType::Read) {
           if (try_resume(candidate, now)) progress = true;
           continue;
         }
-        next = candidate.reads.front();
       } else {
         next = choose_next(candidate, now);
       }
@@ -296,28 +347,30 @@ void Simulator::issue(std::uint64_t id, SimTime now, bool shared_command) {
   if (sub.op != OpType::Write && !mapper_.validate_generation(sub.paddr))
     throw std::runtime_error("STALE_GENERATION");
   auto& target = plane(sub.paddr);
+  auto& source_queue =
+      queues_for(target, sub.op).at(source_index(sub.source));
   if (sub.op == OpType::Read) {
-    if (target.reads.empty() || target.reads.front() != id)
+    if (source_queue.empty() || source_queue.front() != id)
       throw std::logic_error("read queue invariant violated");
-    target.reads.pop_front();
+    source_queue.pop_front();
     --queue_depth_[0];
     ++target.consecutive_reads;
   } else if (sub.op == OpType::Write) {
-    if (target.writes.empty() || target.writes.front() != id)
+    if (source_queue.empty() || source_queue.front() != id)
       throw std::logic_error("write queue invariant violated");
-    target.writes.pop_front();
+    source_queue.pop_front();
     --queue_depth_[1];
     target.consecutive_reads = 0;
   } else if (sub.op == OpType::Erase) {
-    if (target.erases.empty() || target.erases.front() != id)
+    if (source_queue.empty() || source_queue.front() != id)
       throw std::logic_error("erase queue invariant violated");
-    target.erases.pop_front();
+    source_queue.pop_front();
     --queue_depth_[2];
     target.consecutive_reads = 0;
   } else {
-    if (target.refreshes.empty() || target.refreshes.front() != id)
+    if (source_queue.empty() || source_queue.front() != id)
       throw std::logic_error("refresh queue invariant violated");
-    target.refreshes.pop_front();
+    source_queue.pop_front();
     --queue_depth_[3];
     target.consecutive_reads = 0;
   }
@@ -387,7 +440,8 @@ void Simulator::start_program(std::uint64_t id, SimTime now,
   auto& sub = subrequests_.at(id);
   if (now > sub.ready_time)
     sub.latency.nand_command_wait_ns += now - sub.ready_time;
-  sub.old_paddr = mapper_.lookup(sub.lpn);
+  if (sub.source == TransactionSource::User)
+    sub.old_paddr = mapper_.lookup(sub.lpn);
   if (!mapper_.validate_generation(sub.paddr))
     throw std::runtime_error("STALE_GENERATION");
   auto& target = plane(sub.paddr);

@@ -214,6 +214,17 @@ PhysicalAddr StripeMappingTable::reserve_program(
   return address;
 }
 
+void StripeMappingTable::reserve_hole(const StripeId& destination,
+                                      std::uint64_t lpn) {
+  auto& target = mutable_descriptor(destination);
+  if (target.state != StripeState::Open)
+    throw std::runtime_error("HOLE_REQUIRES_OPEN_STRIPE");
+  preview_for(destination, lpn);
+  const auto slot = target.next_program_slot;
+  target.hole_bitmap.set(slot, stripe_capacity_);
+  ++target.next_program_slot;
+}
+
 void StripeMappingTable::commit_program(std::uint64_t lpn,
                                         const PhysicalAddr& paddr) {
   const StripeId stripe{paddr.physical_stripe, paddr.generation};
@@ -338,13 +349,15 @@ void StripeMappingTable::remap_commit(const StripeId& source,
     throw std::runtime_error("REMAP_DESTINATION_NOT_SEALED");
   if (replacement.logical_base_lpn != old.logical_base_lpn)
     throw std::runtime_error("REMAP_LOGICAL_RANGE_MISMATCH");
-  if (replacement.failed_bitmap.any() || replacement.hole_bitmap.any() ||
-      replacement.reserved_programs != 0)
+  if (replacement.failed_bitmap.any() || replacement.reserved_programs != 0)
     throw std::runtime_error("REMAP_DESTINATION_INCOMPLETE");
   for (std::uint32_t slot = 0; slot < old.next_program_slot; ++slot) {
-    if ((old.valid_bitmap.test(slot) || old.failed_bitmap.test(slot)) &&
-        !replacement.valid_bitmap.test(slot))
+    const bool needs_data = old.valid_bitmap.test(slot) ||
+                            old.failed_bitmap.test(slot);
+    if (needs_data && !replacement.valid_bitmap.test(slot))
       throw std::runtime_error("REMAP_DESTINATION_MISSING_LIVE_SLOT");
+    if (!needs_data && !replacement.hole_bitmap.test(slot))
+      throw std::runtime_error("REMAP_DESTINATION_MISSING_HOLE");
   }
   active->second = destination;
   old.state = StripeState::Stale;

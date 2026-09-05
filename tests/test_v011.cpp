@@ -60,6 +60,14 @@ int main() {
                    "  full_duplex: false\n"
                    "internal_fabric:\n"
                    "  port_bandwidth: 64GBps\n"
+                   "host_management:\n"
+                   "  auto_recovery: true\n"
+                   "  max_recovery_attempts: 5\n"
+                   "scheduler:\n"
+                   "  source_aging_ns: 1234\n"
+                   "nand:\n"
+                   "  reliability:\n"
+                   "    program_failure_budget: 2\n"
                    "initialization:\n"
                    "  mode: preconditioned\n";
     config_file.close();
@@ -68,6 +76,10 @@ int main() {
     CHECK(parsed.internal_port_bw_bytes_per_ns == 64.0);
     CHECK(parsed.initialization_mode ==
           hbfsim::InitializationMode::Preconditioned);
+    CHECK(parsed.auto_recovery_enabled);
+    CHECK(parsed.max_recovery_attempts == 5);
+    CHECK(parsed.source_aging_ns == 1234);
+    CHECK(parsed.program_failure_budget == 2);
   }
 
   {
@@ -131,6 +143,8 @@ int main() {
     const auto output = std::filesystem::current_path() / "v011-results";
     simulator.stats().write(output.string(), simulator.now());
     CHECK(std::filesystem::exists(output / "latency_breakdown.csv"));
+    CHECK(std::filesystem::exists(output /
+                                  "source_latency_breakdown.csv"));
     CHECK(std::filesystem::exists(output / "resource_utilization.csv"));
     CHECK(std::filesystem::exists(output / "queue_depth.csv"));
     std::ifstream summary(output / "summary.csv");

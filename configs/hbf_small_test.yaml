@@ -31,6 +31,7 @@ nand:
     cache_program: true
   reliability:
     program_failure_rate: 0
+    program_failure_budget: 0
     raw_bit_error_rate: 0
     retry_ber_multiplier: 0.25
     ecc_correctable_bits: 80
@@ -49,8 +50,12 @@ initialization:
 mapping:
   policy: fine_stripe
   burst_size: 8KiB
+host_management:
+  auto_recovery: false
+  max_recovery_attempts: 3
 scheduler:
   write_starvation_us: 10
+  source_aging_ns: 1000000
   max_consecutive_reads: 2
 statistics:
   output_dir: results/small

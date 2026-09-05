@@ -1,4 +1,4 @@
-# HBFSim v0.2.0 架构设计
+# HBFSim v0.2.1 架构设计
 
 ## 1. 目标与范围
 
@@ -42,9 +42,10 @@ flowchart LR
 | `src/event_queue.cpp` | 确定性事件优先队列 |
 | `src/mapper.cpp` | Mapping policy 选择以及 Simulator 到条带映射的适配 |
 | `src/stripe_mapping.cpp` | Host-managed 条带分配、隐式双向映射、位图、generation 和原子 remap |
+| `src/copy_engine.cpp` | Recovery/Host GC 组合事务、Host replay、重试、提交和源条带清理 |
 | `src/link.cpp` | 独立 Host 路由、全双工 HostInterface、显式端口/总带宽 DataFabric |
 | `src/reliability.cpp` | Program failure、Poisson 位错误、ECC 与 Retry 抽样 |
-| `src/scheduler.cpp` | Plane 队列、ready 判定、读优先、防饥饿、Multi-plane、Cache、Suspend/Resume |
+| `src/scheduler.cpp` | 来源感知队列、优先级与 aging、ready 判定、Multi-plane、Cache、Suspend/Resume |
 | `src/events.cpp` | 完成事件、Page/Block 状态迁移、失败处理与统计更新 |
 | `src/simulator.cpp` | 对象构造、请求拆分、资源连接、事件循环和状态查询 |
 | `src/stats.cpp` | 固定内存分位数、延迟分解、队列时序和资源占用输出 |
@@ -129,15 +130,19 @@ Read 阵列阶段结束后释放 Die/Stack active-plane slot，但 Plane 的数�
 
 ## 6. 调度架构
 
-每个 Plane 有独立的 Read、Write、Erase、Refresh 队列。
+每个 Plane 先按 Read、Write、Erase、Refresh 区分操作，再按 `TransactionSource` 维护独立 FIFO。这样 Recovery/GC 可以与前台请求竞争相同物理资源，同时保留来源内顺序。
 
 基本策略：
 
-1. 默认优先 Read；
-2. 非 Read 请求等待超过 `write_starvation_ns` 后获得优先权；
-3. 连续读取达到 `max_consecutive_reads` 后选择最老的非 Read 请求；
-4. Stack 内通过 round-robin cursor 扫描 Plane，避免固定从 Plane 0 开始；
-5. 操作还必须满足 Die 和 Stack 的 active-plane 上限。
+1. 默认优先级为 Critical Recovery、User Read、Recovery、User/Mapping、Maintenance、GC；
+2. 普通非 GC 写等待超过 `write_starvation_ns` 后获得最高仲裁级别；
+3. 任意来源等待超过 `source_aging_ns` 后获得最高仲裁级别，避免后台饥饿；
+4. 连续读取达到 `max_consecutive_reads` 后提升非 Read 请求；
+5. 同级请求按照 enqueue time 和 transaction id 保持确定性顺序；
+6. Stack 内通过 round-robin cursor 扫描 Plane，避免固定从 Plane 0 开始；
+7. 操作还必须满足 Die 和 Stack 的 active-plane 上限。
+
+低优先级 GC Read 不会仅因到达就 Suspend 正在运行的高优先级 User Program；只有优先级足够高或已经达到 aging 阈值的 Read 才能触发 Suspend。
 
 命令最早发射时间为：
 
@@ -205,14 +210,19 @@ v0.2 不采用传统逐 Page Reverse Mapping，而是在上层保证逻辑地址
 - `BEGIN_MIGRATION/REMAP_COMMIT/ABORT_MIGRATION` 的原子元数据语义；
 - 整条带多 Lane Erase，以及复用时 generation 递增；
 - 访问 generation 校验和 Program Failure Notice。
+- `TransactionSource × OpType` 独立 FIFO、来源优先级和后台 aging；
+- 通用 CopyEngine 驱动的 Recovery 与显式 Host GC；
+- destination Program Failure 后 abort、重新分配和有限次数重试；
+- Copy 完成后的原子 remap 与 source 多 Lane Erase；
+- Recovery/GC 分来源流量、延迟、完成状态和写放大统计。
 
-Program Failure 和 GC 均由 Host 感知并主动发起数据 Copy。目标条带完成并 Seal 之前，旧条带保持 ACTIVE；只有 `REMAP_COMMIT` 能原子切换权威映射。完整设计见 [HOST_MANAGED_STRIPE_MAPPING.md](HOST_MANAGED_STRIPE_MAPPING.md)。
+Program Failure 和 GC 均由 Host 感知并主动发起数据 Copy。`auto_recovery_enabled` 表示仿真 Host 收到失败通知后自动执行既定恢复策略；GC 则由 Host 通过 `start_host_gc(logical_addr)` 显式选择 victim。目标条带完成并 Seal 之前，旧条带保持 ACTIVE；只有 `REMAP_COMMIT` 能原子切换权威映射。完整设计见 [HOST_MANAGED_STRIPE_MAPPING.md](HOST_MANAGED_STRIPE_MAPPING.md)。
 
 ## 10. 扩展接口
 
 建议后续按以下边界扩展：
 
-- Host-managed data movement：在已实现的 `StripeMappingTable` 上增加 RecoveryManager 和 HostGcManager，并把 Copy 拆成真实 Read/Fabric/Program 事务；
+- Automatic Refresh：复用 CopyEngine，但由 retention deadline 和 Host policy 触发；
 - Wear leveling：使用 `erase_count` 驱动 block 选择；
 - Retention/Read disturb：在 ReliabilityModel 中根据时间和读次数动态计算 RBER；
 - Thermal：根据 Stack 功耗状态动态缩放时序；
@@ -226,4 +236,4 @@ Program Failure 和 GC 均由 Host 感知并主动发起数据 Copy。目标条�
 - ECC 只反映纠错能力和延迟结果，不模拟编码器面积与能耗；
 - Suspend/Resume 不模拟模拟电压恢复细节；
 - `tCCS/tADL/tWHR` 是资源可用时间约束，不是引脚波形仿真。
-- 条带级隐式映射和控制面生命周期已经进入 v0.2.0；Recovery/GC 的自动事务编排、extent/sparse 写入接口和完整统计仍未实现。
+- 条带级映射、Recovery 和显式 Host GC 已进入 v0.2.1；Automatic Refresh、完整 extent/sparse fallback、自动 victim 策略和实验元数据仍未实现。

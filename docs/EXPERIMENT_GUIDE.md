@@ -110,7 +110,10 @@ Read/Write 的 `size` 必须非零。Erase/Refresh 使用地址定位 Block，si
 | `mapping.policy` | `linear/fine_stripe/burst_stripe/host_managed` |
 | `mapping.burst_size` | Burst Stripe 的连续 burst 大小 |
 | `scheduler.write_starvation_us` | 非 Read 最大等待阈值，单位 us |
+| `scheduler.source_aging_ns` | GC 等低优先级来源提升为最高仲裁级别前的等待时间 |
 | `scheduler.max_consecutive_reads` | 连续读上限 |
+| `host_management.auto_recovery` | Program Failure 后由仿真 Host 自动运行 Recovery Copy |
+| `host_management.max_recovery_attempts` | destination 失败后的最大条带构建次数 |
 
 `burst_stripe` 要求 burst_size 是 page_size 的整数倍，并且每个 Stack 的 Page 容量能容纳整数个 burst。
 
@@ -119,6 +122,7 @@ Read/Write 的 `size` 必须非零。Erase/Refresh 使用地址定位 Block，si
 | Key | 含义 |
 |---|---|
 | `nand.reliability.program_failure_rate` | 每次 Program 的失败概率 `[0,1]` |
+| `nand.reliability.program_failure_budget` | 最多注入的 Program Failure 数；`0` 表示不限制 |
 | `nand.reliability.raw_bit_error_rate` | 初次 Read 的原始位错误率 `[0,1]` |
 | `nand.reliability.retry_ber_multiplier` | 每次 Retry 后 BER 乘数 `[0,1]` |
 | `nand.reliability.ecc_correctable_bits` | 每 Page/子请求可纠正 bit 数 |
@@ -139,6 +143,9 @@ Read/Write 的 `size` 必须非零。Erase/Refresh 使用地址定位 Block，si
 - `completed_bytes` 与 `successful_bytes`；
 - `failed_requests`；
 - `program_failures`；
+- `program_failure_notices`、`remap_commits`、`aborted_migrations`；
+- Recovery/Host GC 完成与失败 job 数；
+- Recovery/Host GC Read/Program bytes、恢复延迟和条带写放大；
 - `corrected_reads`、`uncorrectable_reads`、`read_retries`；
 - makespan 与 measurement duration；
 - mean latency、p50/p95/p99/p99.9 latency；
@@ -156,6 +163,7 @@ plane,busy_ns,utilization
 其他输出：
 
 - `latency_breakdown.csv`：Host command、Host data、NAND queue、array、fabric 的平均等待/服务时间；
+- `source_latency_breakdown.csv`：按照 `TransactionSource × OpType` 分组的字节、失败数和延迟分解；
 - `resource_utilization.csv`：每 Stack 的 Array-only、Fabric-only、Overlap、Idle，以及 Host 利用率和活跃 Plane；
 - `queue_depth.csv`：队列变化时的 Read/Write/Erase/Refresh 深度和活跃 Plane；
 - `data_port_utilization.csv`、`die_utilization.csv`、`host_channel_utilization.csv`：细粒度资源占用。

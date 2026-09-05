@@ -116,6 +116,40 @@ void StatsCollector::record_request(const Request& request) {
 void StatsCollector::record_subrequest(const SubRequest& subrequest) {
   add_breakdown(latency_breakdown_[subrequest.op], subrequest.latency);
   ++latency_breakdown_samples_[subrequest.op];
+  const auto key = std::make_pair(subrequest.source, subrequest.op);
+  add_breakdown(source_latency_breakdown_[key], subrequest.latency);
+  ++source_latency_samples_[key];
+  source_bytes_[key] += subrequest.bytes;
+  if (subrequest.failed) ++source_failures_[key];
+}
+
+void StatsCollector::record_remap_commit(TransactionSource source,
+                                         SimTime latency_ns) {
+  ++remap_commits_;
+  if (source == TransactionSource::Recovery)
+    recovery_latencies_.record(latency_ns);
+  else if (source == TransactionSource::GarbageCollection)
+    gc_latencies_.record(latency_ns);
+}
+
+void StatsCollector::record_copy_job(TransactionSource source, bool failed) {
+  if (source == TransactionSource::Recovery) {
+    if (failed)
+      ++failed_recovery_jobs_;
+    else
+      ++completed_recovery_jobs_;
+  } else if (source == TransactionSource::GarbageCollection) {
+    if (failed)
+      ++failed_gc_jobs_;
+    else
+      ++completed_gc_jobs_;
+  }
+}
+
+std::uint64_t StatsCollector::source_bytes(TransactionSource source,
+                                           OpType op) const {
+  const auto it = source_bytes_.find(std::make_pair(source, op));
+  return it == source_bytes_.end() ? 0 : it->second;
 }
 
 void StatsCollector::record_array_issue(std::uint32_t stack,
@@ -192,6 +226,36 @@ void StatsCollector::write(const std::string& output_dir,
           << "\nfailed_requests," << failed_requests_
           << "\nprogram_failures," << program_failures_
           << "\nprogram_failure_notices," << program_failure_notices_
+          << "\nremap_commits," << remap_commits_
+          << "\naborted_migrations," << aborted_migrations_
+          << "\ncompleted_recovery_jobs," << completed_recovery_jobs_
+          << "\nfailed_recovery_jobs," << failed_recovery_jobs_
+          << "\ncompleted_host_gc_jobs," << completed_gc_jobs_
+          << "\nfailed_host_gc_jobs," << failed_gc_jobs_
+          << "\nrecovery_read_bytes,"
+          << source_bytes(TransactionSource::Recovery, OpType::Read)
+          << "\nrecovery_program_bytes,"
+          << source_bytes(TransactionSource::Recovery, OpType::Write)
+          << "\nhost_gc_read_bytes,"
+          << source_bytes(TransactionSource::GarbageCollection, OpType::Read)
+          << "\nhost_gc_program_bytes,"
+          << source_bytes(TransactionSource::GarbageCollection, OpType::Write)
+          << "\nrecovery_mean_latency_ns," << recovery_latencies_.mean()
+          << "\nrecovery_p95_latency_ns,"
+          << recovery_latencies_.percentile(0.95)
+          << "\nrecovery_p99_latency_ns,"
+          << recovery_latencies_.percentile(0.99)
+          << "\nhost_gc_mean_latency_ns," << gc_latencies_.mean()
+          << "\nstripe_write_amplification,"
+          << (source_bytes(TransactionSource::User, OpType::Write) == 0
+                  ? 0.0
+                  : static_cast<double>(
+                        source_bytes(TransactionSource::User, OpType::Write) +
+                        source_bytes(TransactionSource::Recovery,
+                                     OpType::Write) +
+                        source_bytes(TransactionSource::GarbageCollection,
+                                     OpType::Write)) /
+                        source_bytes(TransactionSource::User, OpType::Write))
           << "\ncorrected_reads," << corrected_reads_
           << "\nuncorrectable_reads," << uncorrectable_reads_
           << "\nread_retries," << read_retries_
@@ -259,6 +323,36 @@ void StatsCollector::write(const std::string& output_dir,
               << average(total.array_service_ns) << ','
               << average(total.fabric_wait_ns) << ','
               << average(total.fabric_service_ns) << '\n';
+  }
+
+  std::ofstream source_breakdown(
+      std::filesystem::path(output_dir) / "source_latency_breakdown.csv");
+  source_breakdown
+      << "source,op,samples,bytes,failed,host_command_wait_ns,"
+         "host_command_service_ns,host_data_wait_ns,host_data_service_ns,"
+         "nand_queue_wait_ns,nand_command_wait_ns,array_service_ns,"
+         "fabric_wait_ns,fabric_service_ns\n";
+  for (const auto& [key, total] : source_latency_breakdown_) {
+    const auto samples = source_latency_samples_.at(key);
+    const auto failure = source_failures_.find(key);
+    const auto failures = failure == source_failures_.end()
+                              ? 0
+                              : failure->second;
+    const auto average = [samples](SimTime value) {
+      return samples ? static_cast<double>(value) / samples : 0.0;
+    };
+    source_breakdown << to_string(key.first) << ',' << to_string(key.second)
+                     << ',' << samples << ',' << source_bytes_.at(key) << ','
+                     << failures << ','
+                     << average(total.host_command_wait_ns) << ','
+                     << average(total.host_command_service_ns) << ','
+                     << average(total.host_data_wait_ns) << ','
+                     << average(total.host_data_service_ns) << ','
+                     << average(total.nand_queue_wait_ns) << ','
+                     << average(total.nand_command_wait_ns) << ','
+                     << average(total.array_service_ns) << ','
+                     << average(total.fabric_wait_ns) << ','
+                     << average(total.fabric_service_ns) << '\n';
   }
 
   const SimTime window_start = first_arrival_.value_or(0);

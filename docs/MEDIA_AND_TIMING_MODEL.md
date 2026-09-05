@@ -179,15 +179,16 @@ DataFabric 同时受以下条件约束：
 成功：
 
 - 新 Page 进入 VALID；
-- 覆盖写的旧 Page 进入 INVALID；
-- Host-managed L2P 指向新 PPA。
+- Host-managed 条带的 `valid_bitmap` 提交对应 slot；
+- Recovery/GC destination 只有在 Seal 和 `REMAP_COMMIT` 后才成为活动映射。
 
 失败：
 
 - 新 Page 进入 FAILED；
 - 请求标记失败；
 - 顺序编程位置仍前进；
-- 旧 L2P 和旧有效 Page 保持不变。
+- `failed_bitmap` 提交对应 slot，并产生 Host 可见通知；
+- Recovery 完成前 source 条带和旧有效 Page 保持不变。
 
 ## 8. RBER、ECC 与 Read Retry
 

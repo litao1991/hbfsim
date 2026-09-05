@@ -85,6 +85,17 @@ std::string to_string(OpType op) {
   return "UNKNOWN";
 }
 
+std::string to_string(TransactionSource source) {
+  switch (source) {
+    case TransactionSource::User: return "USER";
+    case TransactionSource::Mapping: return "MAPPING";
+    case TransactionSource::Maintenance: return "MAINTENANCE";
+    case TransactionSource::GarbageCollection: return "GC";
+    case TransactionSource::Recovery: return "RECOVERY";
+  }
+  return "UNKNOWN";
+}
+
 OpType parse_op(const std::string& value) {
   const auto normalized = detail::lower(detail::trim(value));
   if (normalized == "r" || normalized == "read") return OpType::Read;
@@ -153,13 +164,17 @@ Config Config::from_yaml_file(const std::string& path) {
   if (const auto it = values.find("mapping.policy"); it != values.end()) config.mapping_policy = parse_mapping(it->second);
   detail::assign_if(values, "scheduler.write_starvation_us", config.write_starvation_ns,
                     [](const std::string& v) { return detail::parse_u64(v) * 1'000ULL; });
+  detail::assign_if(values, "scheduler.source_aging_ns", config.source_aging_ns, time);
   detail::assign_if(values, "scheduler.max_consecutive_reads", config.max_consecutive_reads, integer);
+  detail::assign_if(values, "host_management.auto_recovery", config.auto_recovery_enabled, parse_bool);
+  detail::assign_if(values, "host_management.max_recovery_attempts", config.max_recovery_attempts, integer);
   detail::assign_if(values, "nand.strict_media_validation", config.strict_media_validation, parse_bool);
   detail::assign_if(values, "nand.features.suspend_resume", config.suspend_resume_enabled, parse_bool);
   detail::assign_if(values, "nand.features.multi_plane", config.multi_plane_enabled, parse_bool);
   detail::assign_if(values, "nand.features.max_multi_plane_width", config.max_multi_plane_width, integer);
   detail::assign_if(values, "nand.features.cache_program", config.cache_program_enabled, parse_bool);
   detail::assign_if(values, "nand.reliability.program_failure_rate", config.program_failure_rate, parse_probability);
+  detail::assign_if(values, "nand.reliability.program_failure_budget", config.program_failure_budget, integer);
   detail::assign_if(values, "nand.reliability.raw_bit_error_rate", config.raw_bit_error_rate, parse_probability);
   detail::assign_if(values, "nand.reliability.retry_ber_multiplier", config.retry_ber_multiplier, parse_probability);
   detail::assign_if(values, "nand.reliability.ecc_correctable_bits", config.ecc_correctable_bits, integer);
@@ -178,6 +193,7 @@ void Config::validate() const {
       host_channels_per_stack == 0 || ports_per_stack == 0 ||
       max_active_planes_per_die == 0 || max_active_planes_per_stack == 0 ||
       max_multi_plane_width == 0 ||
+      source_aging_ns == 0 || max_recovery_attempts == 0 ||
       host_bw_bytes_per_ns <= 0.0 || internal_bw_bytes_per_ns <= 0.0 ||
       internal_port_bw_bytes_per_ns <= 0.0)
     throw std::runtime_error("invalid zero-valued HBF topology or link");

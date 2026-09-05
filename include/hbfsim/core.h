@@ -41,6 +41,7 @@ enum class HostLinkDirection { Command, HostToDevice, DeviceToHost };
 enum class SimulationPhase { Initialize, Warmup, Measure, Drain };
 
 std::string to_string(OpType op);
+std::string to_string(TransactionSource source);
 OpType parse_op(const std::string& value);
 std::uint64_t parse_size(const std::string& value);
 double parse_bandwidth_bytes_per_ns(const std::string& value);
@@ -77,13 +78,17 @@ struct Config {
   MappingPolicy mapping_policy = MappingPolicy::BurstStripe;
   std::uint64_t burst_size = 2 * 1024 * 1024;
   SimTime write_starvation_ns = 100'000;
+  SimTime source_aging_ns = 1'000'000;
   std::uint32_t max_consecutive_reads = 64;
+  bool auto_recovery_enabled = false;
+  std::uint32_t max_recovery_attempts = 3;
   bool strict_media_validation = false;
   bool suspend_resume_enabled = false;
   bool multi_plane_enabled = false;
   std::uint32_t max_multi_plane_width = 2;
   bool cache_program_enabled = false;
   double program_failure_rate = 0.0;
+  std::uint64_t program_failure_budget = 0;
   double raw_bit_error_rate = 0.0;
   double retry_ber_multiplier = 0.25;
   std::uint32_t ecc_correctable_bits = 0;
@@ -177,6 +182,7 @@ class StripeMappingTable {
   PhysicalAddr reserve_program(std::uint64_t lpn);
   PhysicalAddr reserve_program(const StripeId& destination,
                                std::uint64_t lpn);
+  void reserve_hole(const StripeId& destination, std::uint64_t lpn);
   void commit_program(std::uint64_t lpn, const PhysicalAddr& paddr);
   ProgramFailureNotice fail_program(std::uint64_t lpn,
                                     const PhysicalAddr& paddr);
@@ -196,6 +202,7 @@ class StripeMappingTable {
   const StripeDescriptor& descriptor(const StripeId& stripe) const;
   std::optional<StripeId> active_stripe(std::uint64_t lpn) const;
   std::size_t active_mapping_count() const { return active_.size(); }
+  std::size_t free_stripe_count() const { return free_stripes_.size(); }
 
  private:
   StripeId allocate_internal(std::uint64_t logical_base_lpn,
@@ -231,6 +238,8 @@ struct Request {
   SimTime host_command_service_ns = 0;
   bool measured = true;
   bool failed = false;
+  bool internal = false;
+  TransactionSource source = TransactionSource::User;
 };
 
 struct LatencyBreakdown {
@@ -254,6 +263,7 @@ struct SubRequest {
   std::uint64_t bytes = 0;
   PhysicalAddr paddr;
   std::optional<PhysicalAddr> old_paddr;
+  std::optional<std::uint64_t> copy_job_id;
   SimTime arrival_time = 0;
   SimTime enqueue_time = 0;
   SimTime issue_time = 0;
@@ -267,6 +277,7 @@ struct SubRequest {
   LatencyBreakdown latency;
   bool suspended = false;
   bool failed = false;
+  bool critical = false;
 };
 
 using FlashTransaction = SubRequest;
@@ -407,6 +418,7 @@ class ReliabilityModel {
  private:
   const Config& config_;
   std::mt19937_64 random_;
+  std::uint64_t injected_program_failures_ = 0;
 };
 
 struct BlockMeta {
@@ -430,11 +442,14 @@ struct DieState {
 };
 
 struct Plane {
+  static constexpr std::size_t kSourceCount = 5;
+  using SourceQueues =
+      std::array<std::deque<std::uint64_t>, kSourceCount>;
   bool busy = false;
-  std::deque<std::uint64_t> reads;
-  std::deque<std::uint64_t> writes;
-  std::deque<std::uint64_t> erases;
-  std::deque<std::uint64_t> refreshes;
+  SourceQueues reads;
+  SourceQueues writes;
+  SourceQueues erases;
+  SourceQueues refreshes;
   std::uint32_t consecutive_reads = 0;
   SimTime ready_at = 0;
   bool data_register_busy = false;
@@ -515,6 +530,9 @@ class StatsCollector {
     ++program_failures_;
     ++program_failure_notices_;
   }
+  void record_remap_commit(TransactionSource source, SimTime latency_ns);
+  void record_aborted_migration() { ++aborted_migrations_; }
+  void record_copy_job(TransactionSource source, bool failed);
   void set_topology(std::uint32_t stacks, std::uint32_t dies_per_stack,
                     std::uint32_t planes_per_die,
                     std::uint32_t ports_per_stack,
@@ -532,6 +550,17 @@ class StatsCollector {
   std::uint64_t program_failure_notices() const {
     return program_failure_notices_;
   }
+  std::uint64_t source_bytes(TransactionSource source, OpType op) const;
+  std::uint64_t remap_commits() const { return remap_commits_; }
+  std::uint64_t aborted_migrations() const { return aborted_migrations_; }
+  std::uint64_t completed_recovery_jobs() const {
+    return completed_recovery_jobs_;
+  }
+  std::uint64_t failed_recovery_jobs() const {
+    return failed_recovery_jobs_;
+  }
+  std::uint64_t completed_gc_jobs() const { return completed_gc_jobs_; }
+  std::uint64_t failed_gc_jobs() const { return failed_gc_jobs_; }
 
  private:
   struct Interval { SimTime start = 0; SimTime end = 0; };
@@ -554,6 +583,12 @@ class StatsCollector {
   std::uint64_t uncorrectable_reads_ = 0;
   std::uint64_t program_failures_ = 0;
   std::uint64_t program_failure_notices_ = 0;
+  std::uint64_t remap_commits_ = 0;
+  std::uint64_t aborted_migrations_ = 0;
+  std::uint64_t completed_recovery_jobs_ = 0;
+  std::uint64_t failed_recovery_jobs_ = 0;
+  std::uint64_t completed_gc_jobs_ = 0;
+  std::uint64_t failed_gc_jobs_ = 0;
   std::uint32_t stacks_ = 0;
   std::uint32_t dies_per_stack_ = 0;
   std::uint32_t planes_per_die_ = 0;
@@ -567,6 +602,16 @@ class StatsCollector {
   std::unordered_map<std::uint32_t, SimTime> plane_busy_ns_;
   std::map<OpType, LatencyBreakdown> latency_breakdown_;
   std::map<OpType, std::uint64_t> latency_breakdown_samples_;
+  std::map<std::pair<TransactionSource, OpType>, LatencyBreakdown>
+      source_latency_breakdown_;
+  std::map<std::pair<TransactionSource, OpType>, std::uint64_t>
+      source_latency_samples_;
+  std::map<std::pair<TransactionSource, OpType>, std::uint64_t>
+      source_bytes_;
+  std::map<std::pair<TransactionSource, OpType>, std::uint64_t>
+      source_failures_;
+  LatencyHistogram recovery_latencies_;
+  LatencyHistogram gc_latencies_;
   std::vector<std::vector<Interval>> stack_array_intervals_;
   std::vector<std::vector<Interval>> stack_fabric_intervals_;
   std::vector<std::vector<Interval>> stack_host_intervals_;
@@ -593,6 +638,9 @@ class Simulator {
   const std::vector<ProgramFailureNotice>& program_failure_notices() const {
     return program_failure_notices_;
   }
+  std::uint64_t start_host_gc(std::uint64_t logical_addr);
+  void invalidate_host_page(std::uint64_t logical_addr);
+  std::size_t active_copy_jobs() const { return copy_jobs_.size(); }
 
  private:
   void schedule(SimTime when, EventType type, std::uint64_t request_id,
@@ -638,6 +686,45 @@ class Simulator {
   void materialize_initialized_page(const PhysicalAddr& paddr);
   bool is_measured(std::uint64_t request_id) const;
   void record_queue_depth();
+  std::uint64_t start_copy_job(TransactionSource source,
+                               const StripeId& stripe,
+                               std::optional<std::uint32_t> replay_slot,
+                               bool measured, SimTime now);
+  void advance_copy_job(std::uint64_t job_id, SimTime now);
+  void handle_copy_completion(std::uint64_t job_id, OpType op,
+                              bool failed, SimTime now);
+  void enqueue_copy_read(std::uint64_t job_id, std::uint32_t slot,
+                         SimTime now);
+  void enqueue_copy_program(std::uint64_t job_id, std::uint32_t slot,
+                            SimTime now);
+  void enqueue_copy_erases(std::uint64_t job_id, SimTime now);
+  void enqueue_stripe_erases(const StripeId& stripe,
+                             TransactionSource source, bool measured,
+                             std::optional<std::uint64_t> copy_job_id,
+                             SimTime now);
+  void restart_copy_job(std::uint64_t job_id, SimTime now);
+  void finish_copy_job(std::uint64_t job_id, SimTime now, bool failed);
+  void start_ready_recoveries(SimTime now);
+
+  enum class CopyStage { Copying, ErasingSource, CleaningDestination };
+  struct CopyJob {
+    std::uint64_t id = 0;
+    TransactionSource source = TransactionSource::Recovery;
+    StripeId source_stripe;
+    StripeId destination_stripe;
+    std::uint32_t next_slot = 0;
+    std::uint32_t slot_limit = 0;
+    std::optional<std::uint32_t> replay_slot;
+    std::uint32_t attempts = 0;
+    std::uint32_t pending_erases = 0;
+    SimTime start_time = 0;
+    bool measured = true;
+    CopyStage stage = CopyStage::Copying;
+  };
+  struct PendingRecovery {
+    StripeId source_stripe;
+    bool measured = true;
+  };
 
   Config config_;
   AddressMapper mapper_;
@@ -662,6 +749,9 @@ class Simulator {
   std::unordered_map<std::uint64_t, PageState> transient_page_states_;
   std::unordered_set<std::uint64_t> erased_blocks_;
   std::vector<ProgramFailureNotice> program_failure_notices_;
+  std::unordered_map<std::uint64_t, CopyJob> copy_jobs_;
+  std::vector<PendingRecovery> pending_recoveries_;
+  std::uint64_t next_copy_job_id_ = 0;
   std::array<std::uint64_t, 4> queue_depth_{};
   SimulationPhase phase_ = SimulationPhase::Initialize;
   bool streaming_submission_ = false;

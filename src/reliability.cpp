@@ -10,9 +10,15 @@ ReliabilityModel::ReliabilityModel(const Config& config)
     : config_(config), random_(config.random_seed) {}
 
 bool ReliabilityModel::program_failed() {
+  if (config_.program_failure_budget != 0 &&
+      injected_program_failures_ >= config_.program_failure_budget)
+    return false;
   if (config_.program_failure_rate <= 0.0) return false;
-  if (config_.program_failure_rate >= 1.0) return true;
-  return std::bernoulli_distribution(config_.program_failure_rate)(random_);
+  const bool failed = config_.program_failure_rate >= 1.0 ||
+                      std::bernoulli_distribution(
+                          config_.program_failure_rate)(random_);
+  if (failed) ++injected_program_failures_;
+  return failed;
 }
 
 ReadErrorResult ReliabilityModel::read_result(std::uint64_t bytes,

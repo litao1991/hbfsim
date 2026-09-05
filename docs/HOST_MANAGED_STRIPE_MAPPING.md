@@ -4,7 +4,7 @@
 
 本文定义 HBFSim v0.2 的 Host-managed 映射、Program Failure 恢复和主动 GC 语义，也是实现状态清单。
 
-截至 v0.2.0，阶段 A、阶段 B 的核心数据结构和控制面已经实现，阶段 C 已实现 Program Failure Notice 与失败 slot 状态提交。Recovery/GC 的定时数据复制编排，以及阶段 E 的 extent/sparse 写入接口仍在后续阶段；这些能力不会用零延迟元数据操作代替。
+截至 v0.2.1，阶段 A/B 已完成；阶段 C 的失败通知、Host replay、真实数据搬运和 destination retry 已完成；阶段 D 支持 Host 显式选择 victim、有效 slot 搬运、原子提交和源条带擦除。Automatic Refresh、自动 victim 策略，以及完整 extent/sparse fallback 仍在后续阶段。
 
 设计目标是利用上层提供的严格顺序约束，把传统逐 Page L2P/P2L 表收敛为条带级元数据，同时仍然准确模拟物理 Page 状态、数据搬运流量、资源竞争和失败恢复延迟。
 
@@ -232,6 +232,8 @@ source → STALE → ERASE/BAD
 
 复制期间 source 仍是读请求的权威版本，destination 处于构建状态。只有完整成功的 `REMAP_COMMIT` 能切换映射；如果 destination 再次失败，则放弃该 generation 并重新分配目标条带。
 
+v0.2.1 的 CopyEngine 会通过真实 Erase 事务回收被放弃的 destination；达到 `max_recovery_attempts` 后停止重试、保留 source 为活动权威版本，并记录失败的 Recovery job。
+
 ## 9. Host 主动 GC
 
 HBFSim 不在设备侧隐式启动 GC。Host GC 由以下显式步骤组成：
@@ -384,22 +386,24 @@ Copy 不是零延迟元数据命令，而是由 Read/Data Move/Program 事务组
 ### 阶段 C：Program Failure Recovery
 
 - [x] 产生 Host 可见 failure notice；
-- [ ] 用 Recovery transaction 真实搬运数据；
+- [x] 用 Recovery transaction 真实搬运数据；
 - [x] 支持 destination failure 状态、abort 和重新分配的控制面语义；
-- [ ] 在事件引擎中自动编排 destination failure 后的再次恢复。
+- [x] 在事件引擎中自动编排 destination failure 后的再次恢复。
 
 ### 阶段 D：Host GC
 
-- [ ] Host 选择 Victim；
-- [ ] 复制有效 slot 或 extent；
+- [x] Host 通过 `start_host_gc` 显式选择 Victim；
+- [x] 复制有效 slot，并为失效 slot 在 destination 保留 hole；
 - [x] 原子 Commit 与 source `STALE` 状态切换；
 - [x] 整 Stripe 多 Lane Erase；
-- [ ] 补充写放大、恢复延迟和条带状态统计。
+- [x] 补充 Copy 流量、写放大、恢复/GC 延迟与完成状态统计；
+- [ ] 增加条带状态数量的时间序列统计。
 
 ### 阶段 E：退化映射
 
 - [x] 提供 lazy hole bitmap、ExtentRun 和 SparseExceptionMap 数据结构；
-- [ ] 增加 hole/extent/sparse 的 Host 写入接口；
+- [x] 增加 GC 使用的顺序 hole 接口；
+- [ ] 增加 extent/sparse 的 Host 写入接口；
 - [ ] 设置退化阈值和完整 P2L fallback；
 - [x] 保证正常路径不承担异常路径的常驻内存成本。
 
