@@ -24,6 +24,7 @@ enum class TransactionSource {
   HostRefresh,
   HostWearLevel,
 };
+enum class HostRewriteReason { ProgramFailure, Refresh, WearLevel };
 enum class HostGcVictimPolicy { InvalidRatio, Greedy };
 enum class BlockState { Free, Open, Closed, Erasing, Bad };
 enum class PageState { Erased, Reading, Programming, Valid, Invalid, Failed };

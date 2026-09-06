@@ -41,6 +41,10 @@ class AddressMapper {
                          std::function<std::uint32_t(std::uint64_t)> resolver) {
     if (stripes_) stripes_->set_zone_resolver(zone_count, std::move(resolver));
   }
+  void set_spec_zone_resolver(
+      std::function<std::uint64_t(const HbfChannelAddress&)> resolver) {
+    spec_zone_resolver_ = std::move(resolver);
+  }
   const HbfChannelDomain& channels() const { return *channels_; }
   const NandTopology& topology() const { return *topology_; }
 
@@ -53,6 +57,7 @@ class AddressMapper {
   std::unique_ptr<NandTopology> owned_topology_;
   const NandTopology* topology_ = nullptr;
   std::unique_ptr<StripeMappingTable> stripes_;
+  std::function<std::uint64_t(const HbfChannelAddress&)> spec_zone_resolver_;
 };
 
 }  // namespace hbfsim

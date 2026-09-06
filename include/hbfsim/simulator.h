@@ -47,10 +47,14 @@ class Simulator {
   const std::vector<ReplayPlan>& replay_plans() const {
     return system_.replay_manager().plans();
   }
+  const std::vector<SpecBlockReplayPlan>& spec_replay_plans() const {
+    return system_.host_rewrite_engine().spec_plans();
+  }
   std::uint64_t start_host_gc(std::uint64_t logical_addr);
   // The caller asserts it can reconstruct every non-hole page described by
   // the plan.  Payload bytes are timed on the host link but not stored.
   std::uint64_t start_host_replay(std::uint64_t replay_plan_id);
+  std::uint64_t start_spec_host_replay(std::uint64_t replay_plan_id);
   std::uint64_t start_host_rewrite(std::uint64_t logical_addr);
   std::uint64_t start_host_refresh(std::uint64_t logical_addr);
   std::optional<RefreshDecision> refresh_required() const;
@@ -65,6 +69,12 @@ class Simulator {
   }
   std::size_t active_copy_jobs() const { return system_.copy_engine().size(); }
   ReducedCapacityReport reduced_capacity() const;
+  HbfRegisterResult read_register(std::uint32_t channel,
+                                  std::uint32_t offset) const;
+  HbfRegisterResult write_register(std::uint32_t channel,
+                                   std::uint32_t offset,
+                                   std::uint64_t value);
+  HbfAdminResult submit_admin(const HbfAdminCommand& command);
 
  private:
   void schedule(SimTime when, EventType type, std::uint64_t request_id,
@@ -159,6 +169,9 @@ class Simulator {
   void handle_copy_failure_drain(std::uint64_t job_id, SimTime now);
   std::uint64_t start_host_rewrite(std::uint64_t logical_addr,
                                    HostRewriteReason reason);
+  std::uint64_t start_spec_host_rewrite(std::uint64_t logical_addr,
+                                        HostRewriteReason reason);
+  bool spec_channel_idle(std::uint32_t channel) const;
   void enqueue_host_replay_program(std::uint64_t job_id,
                                    std::uint32_t slot, SimTime now);
   void advance_host_replay(std::uint64_t job_id, SimTime now);

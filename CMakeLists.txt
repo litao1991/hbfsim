@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(hbfsim VERSION 0.7.4 LANGUAGES CXX)
+project(hbfsim VERSION 0.8.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(hbfsim_core
   src/hbf_system.cpp
   src/protocol/protocol.cpp
+  src/protocol/admin.cpp
   src/protocol/frontend.cpp
   src/controller/base_die.cpp
   src/controller/scheduler.cpp
@@ -21,7 +22,9 @@ add_library(hbfsim_core
   src/media/media.cpp
   src/media/reliability.cpp
   src/mapping/mapper.cpp
+  src/mapping/spec_block_addressing.cpp
   src/management/refresh.cpp
+  src/management/spec_zones.cpp
   src/extensions/stripe_mapping.cpp
   src/extensions/copy_engine.cpp
   src/extensions/host_replay.cpp
@@ -43,7 +46,7 @@ if(BUILD_TESTING)
     target_link_libraries(test_${test_name} PRIVATE hbfsim_core)
     add_test(NAME ${test_name} COMMAND test_${test_name})
   endforeach()
-  foreach(spec_test_name profile response system_boundary channel axi status dlu semantic media_mapping read_cache batch_read)
+  foreach(spec_test_name profile response system_boundary channel axi status dlu semantic media_mapping read_cache batch_read block_replay admin)
     add_executable(test_spec_${spec_test_name}
       tests/spec/test_${spec_test_name}.cpp)
     target_link_libraries(test_spec_${spec_test_name} PRIVATE hbfsim_core)

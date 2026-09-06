@@ -6,13 +6,16 @@
 #include "hbfsim/controller/interconnect.h"
 #include "hbfsim/management/host_gc.h"
 #include "hbfsim/management/refresh.h"
+#include "hbfsim/management/spec_zones.h"
 #include "hbfsim/management/zones.h"
 #include "hbfsim/management/wear_level.h"
 #include "hbfsim/mapping/mapper.h"
+#include "hbfsim/mapping/spec_block_addressing.h"
 #include "hbfsim/media/nand_media.h"
 #include "hbfsim/media/reliability.h"
 #include "hbfsim/media/topology.h"
 #include "hbfsim/protocol/axi.h"
+#include "hbfsim/protocol/admin.h"
 #include "hbfsim/protocol/channel.h"
 #include "hbfsim/protocol/dlu.h"
 #include "hbfsim/protocol/frontend.h"
@@ -58,6 +61,13 @@ class HbfSystem {
   HostRouter& host_router() { return host_router_; }
   const HostRouter& host_router() const { return host_router_; }
   const HbfChannelDomain& channels() const { return channels_; }
+  const SpecBlockAddressing& spec_block_addressing() const {
+    return spec_block_addressing_;
+  }
+  HbfRegisterFile& registers() { return registers_; }
+  const HbfRegisterFile& registers() const { return registers_; }
+  SpecZoneManager& spec_zones() { return spec_zones_; }
+  const SpecZoneManager& spec_zones() const { return spec_zones_; }
   const HbfProtocolValidator& protocol_validator() const {
     return frontend_.validator();
   }
@@ -90,10 +100,13 @@ class HbfSystem {
   NandTopology topology_;
   HbfChannelDomain channels_;
   ProtocolFrontend frontend_;
+  SpecZoneManager spec_zones_;
   AddressMapper mapper_;
+  SpecBlockAddressing spec_block_addressing_;
   HostRouter host_router_;
   ReliabilityModel reliability_;
   NandMediaSystem media_;
+  HbfRegisterFile registers_;
   BaseDieController controller_;
   CopyEngine copy_engine_;
   HostRewriteEngine host_rewrite_engine_;

@@ -95,7 +95,9 @@ PhysicalAddr AddressMapper::base_map_channel(
   const auto total_planes =
       static_cast<std::uint64_t>(config_.stacks) * planes_per_stack;
   const auto planes_per_channel = total_planes / channels_->channel_count();
-  const auto local_lpn = address.local_address / config_.page_size;
+  const auto local_lpn = spec_zone_resolver_
+                             ? spec_zone_resolver_(address)
+                             : address.local_address / config_.page_size;
   const auto pages_per_channel = planes_per_channel *
                                  config_.blocks_per_plane *
                                  config_.pages_per_block;

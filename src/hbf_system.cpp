@@ -182,10 +182,13 @@ HbfSystem::HbfSystem(const Config& config)
       topology_(config),
       channels_(config),
       frontend_(config, channels_),
+      spec_zones_(config, channels_),
       mapper_(config, channels_, topology_),
+      spec_block_addressing_(config, channels_),
       host_router_(config, channels_),
       reliability_(config),
       media_(config, topology_),
+      registers_(config, topology_, media_),
       controller_(config, media_),
       host_gc_manager_(config),
       refresh_manager_(config),
@@ -195,6 +198,13 @@ HbfSystem::HbfSystem(const Config& config)
     mapper_.set_zone_resolver(
         config.zone_count,
         [this](std::uint64_t lpn) { return zones_.physical_zone(lpn); });
+  }
+  if (spec_zones_.enabled()) {
+    mapper_.set_spec_zone_resolver(
+        [this, page_size = config.page_size](const HbfChannelAddress& address) {
+          return spec_zones_.physical_local_page(
+              address.channel, address.local_address / page_size);
+        });
   }
 }
 

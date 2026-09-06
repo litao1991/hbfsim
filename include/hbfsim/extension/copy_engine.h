@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hbfsim/common/types.h"
+#include "hbfsim/mapping/spec_block_addressing.h"
 #include "hbfsim/mapping/stripe_mapping.h"
 
 #include <cstdint>
@@ -57,11 +58,9 @@ struct ReplayPlan {
   std::uint32_t committed_slots = 0;
   PhysicalAddr failed_ppa;
   std::uint64_t replay_bytes = 0;
-  enum class Reason { ProgramFailure, Refresh, WearLevel };
+  using Reason = HostRewriteReason;
   Reason reason = Reason::ProgramFailure;
 };
-
-using HostRewriteReason = ReplayPlan::Reason;
 
 enum class HostRewriteStage {
   Programming,
@@ -85,6 +84,8 @@ struct HostRewriteJob {
   std::uint32_t pending_erases = 0;
   SimTime start_time = 0;
   bool measured = true;
+  bool spec_block_replay = false;
+  std::vector<std::uint64_t> spec_page_addresses;
   HostRewriteStage stage = HostRewriteStage::Programming;
 };
 
@@ -125,9 +126,20 @@ class HostRewriteEngine {
                   static_cast<std::uint64_t>(notice.committed_slots + 1) *
                       page_size,
                   HostRewriteReason::ProgramFailure);
-    return plans_.back();
   }
   const std::vector<ReplayPlan>& plans() const { return plans_; }
+  const std::vector<SpecBlockReplayPlan>& spec_plans() const {
+    return spec_plans_;
+  }
+  const SpecBlockReplayPlan& spec_plan(std::uint64_t id) const {
+    if (id >= spec_plans_.size()) throw std::out_of_range("UNKNOWN_SPEC_REPLAY_PLAN");
+    return spec_plans_.at(id);
+  }
+  const SpecBlockReplayPlan& record_spec(SpecBlockReplayPlan plan) {
+    plan.id = next_spec_id_++;
+    spec_plans_.push_back(std::move(plan));
+    return spec_plans_.back();
+  }
   const ReplayPlan& plan(std::uint64_t id) const {
     if (id >= plans_.size()) throw std::out_of_range("UNKNOWN_REPLAY_PLAN");
     return plans_.at(id);
@@ -151,6 +163,8 @@ class HostRewriteEngine {
  private:
   std::vector<ReplayPlan> plans_;
   std::uint64_t next_id_ = 0;
+  std::vector<SpecBlockReplayPlan> spec_plans_;
+  std::uint64_t next_spec_id_ = 0;
   std::unordered_map<std::uint64_t, HostRewriteJob> jobs_;
   std::uint64_t next_job_id_ = 0;
 };

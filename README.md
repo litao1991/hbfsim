@@ -1,8 +1,8 @@
-# HBFSim v0.7.3
+# HBFSim v0.8.2
 
 HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style NAND stacks. It models performance-relevant resources rather than packet- or bit-level hardware details.
 
-## Included through v0.7.3
+## Included through v0.8.2
 
 - v0.4.1 is a behavior-preserving ownership refactor: public declarations are split into narrow headers, `HbfSystem` composes protocol/controller/media/extension components, and `Simulator` no longer owns device media, cache, interconnect, or CopyEngine state.
 - v0.4.2 moves controller execution state (active-plane credits, dispatch cursor/wakeup, and program-ready queues) from `Simulator` into `BaseDieController`, preserving the v0.4.1 model behavior.
@@ -13,7 +13,11 @@ HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style
 - v0.5.3 records a Host-facing `ReplayPlan` for every Host-managed program failure, carrying stripe generation, failed page/slot, committed prefix, and replay payload size without silently treating replay as research Copy GC.
 - v0.5.4 models Read Disturb and Retention Age in RBER and can trigger Refresh from a read-count threshold. v0.5.5 adds zone-level write/erase accounting and Host-directed logical-to-physical Zone remap metadata, independent of Stripe Mapping.
 - v0.6.0–v0.6.4 closes the Host-managed media-management loops: `start_host_replay()` executes Host-payload sequential replay; Zone remap now selects physical Stripe placement; wear policy uses MAX/AVG/variance PEC and launches Host rewrites; Spec refresh is Host-triggered; `reduced_capacity()` exposes retirement bitmap/capacity state.
-- v0.7.0–v0.7.3 corrects the Host rewrite failed-slot contract, makes Page retention age Page-specific, separates Replay/Refresh/Wear traffic, replaces aliased Zone telemetry with bijective logical/physical Zone mapping and physical P/E ownership, and introduces the `IMediaManagementMapping`/`HostRewriteEngine` boundaries.
+- v0.7.0–v0.7.3 corrects the Host rewrite failed-slot contract, separates Replay/Refresh/Wear traffic, replaces aliased Zone telemetry with bijective logical/physical Zone mapping and physical P/E ownership, and introduces the `IMediaManagementMapping`/`HostRewriteEngine` boundaries. Retention intentionally remains block-level, using the last successful program time; this avoids per-page timestamp storage and can be refined later if a study needs it.
+- v0.7.4 separates the research timer-based Batch Read experiment from the HBF v0.7 path, where a Regular Read is the Batch boundary that flushes pending Batch Reads.
+- v0.8.0 projects the HBF R1–R5 block-address formula into `SpecBlockReplayPlan`. The default HBF profile can execute Host Program-Failure Replay and Host Refresh as sequential Host-payload writes without research Stripe Mapping, CopyEngine migration, or internal GC.
+- v0.8.1 adds the Simulator-API control-plane foundation: `HbfRegisterFile` exposes dynamic BUCCAP, VS, BUCC, BUCSTS, MAXPEC, AVGPEC, and REDCAP values per Channel.
+- v0.8.2 adds per-Channel Spec Zone L2P placement and Admin Opcode `0x08` Zone Remapping. It requires Host-controlled WLS and a quiesced Channel, changes only L2P state, and leaves data rewrite explicitly to the Host.
 
 - Explicit `media_research`, `hbf_v0_7`, and `ai_system` simulation profiles separate compatibility experiments from the specification-oriented path. HBF/AI profiles default research extensions off.
 - `HbfSystem` is now the device-model composition root for mapping, routing, reliability, Host GC, and Refresh services; `Simulator` retains time and event ownership.
@@ -56,7 +60,7 @@ HBFSim is a trace-driven, single-threaded discrete-event simulator for HBF-style
 - `ResourceTracker` accumulates Array/Fabric/Host occupancy and overlap online with memory bounded by topology. Queue depth is interval-sampled rather than retained at every state change.
 - `tools/experiment_runner.py` expands Cartesian parameter sweeps, runs them in parallel, records Git SHA and SHA-256 hashes, preserves input and fully resolved configs, aggregates metrics, and creates dependency-free SVG plots.
 
-Explicit in-place Refresh remains available as a maintenance operation. In Spec profiles, retention/read-disturb refresh is reported to the Host and performed only by Host-payload rewrite. v0.2.7 added a repeatable model-validation gate; v0.3.0 added configurable Parallelism Groups while retaining full-device stripes by default. Temperature-aware retention, detailed voltage-threshold distributions, HBM overlap, and packet-level UCIe remain outside v0.7.3.
+Explicit in-place Refresh remains available as a maintenance operation. In Spec profiles, retention/read-disturb refresh is reported to the Host and performed only by Host-payload rewrite. v0.2.7 added a repeatable model-validation gate; v0.3.0 added configurable Parallelism Groups while retaining full-device stripes by default. Temperature-aware retention, detailed voltage-threshold distributions, HBM overlap, packet-level UCIe, and flit-level CSR transport remain outside v0.8.2.
 
 The reliability model is command-level rather than bit-level: each read samples a raw error count from a Poisson distribution, ECC corrects counts within `ecc_correctable_bits`, and each retry multiplies BER by `retry_ber_multiplier`. A failed program consumes its sequential-program position but does not replace the previous L2P mapping.
 
@@ -103,6 +107,8 @@ The v0.2 Host-managed mapping contract and implementation status are documented 
 Parallelism Group geometry and compatibility are documented in [`docs/V0.3.0_PARALLELISM_GROUPS.md`](docs/V0.3.0_PARALLELISM_GROUPS.md). Run its example with `./build/hbfsim configs/hbf_parallelism_groups.yaml traces/parallelism_groups.csv`.
 
 The v0.3.1 Profile, `HbfSystem`, response, and compliance-test boundary is documented in [`docs/V0.3.1_SPEC_FOUNDATION.md`](docs/V0.3.1_SPEC_FOUNDATION.md). `configs/hbf_v0_7_foundation.yaml` is the specification-oriented starter configuration.
+
+The HBF v0.8 Spec addressing, Host replay, direct Simulator control-plane APIs, and Zone Remap contract are documented in [`docs/V0.8_SPEC_CONTROL_PLANE.md`](docs/V0.8_SPEC_CONTROL_PLANE.md).
 
 The specification-oriented programming-model increments are documented in [`docs/V0.3.2_CHANNEL.md`](docs/V0.3.2_CHANNEL.md), [`docs/V0.3.3_AXI.md`](docs/V0.3.3_AXI.md), [`docs/V0.3.4_STATUS.md`](docs/V0.3.4_STATUS.md), and [`docs/V0.3.5_DLU.md`](docs/V0.3.5_DLU.md).
 

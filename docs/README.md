@@ -1,6 +1,6 @@
 # HBFSim 设计文档
 
-本目录记录 HBFSim v0.7.3 的架构、模型语义和实验方法。文档以当前代码实现为准。
+本目录记录 HBFSim v0.8.2 的架构、模型语义和实验方法。文档以当前代码实现为准。
 
 ## 文档索引
 
@@ -30,6 +30,7 @@
 - [V0.5.0_BATCH_READ_FOUNDATION.md](V0.5.0_BATCH_READ_FOUNDATION.md)：ReadType、Bank Sense queue 与 Batch Read 资源域。
 - [V0.5.1_BATCH_READ_PROTOCOL.md](V0.5.1_BATCH_READ_PROTOCOL.md)：Batch hint、聚合窗口、边界、批量发射与统计。
 - [V0.7.4_BATCH_READ_COMPLIANCE.md](V0.7.4_BATCH_READ_COMPLIANCE.md)：Spec/Research 两条 Batch 调度路径与 Regular Read boundary 合规语义。
+- [V0.8_SPEC_CONTROL_PLANE.md](V0.8_SPEC_CONTROL_PLANE.md)：R1–R5 Block Replay、Simulator API 寄存器基础和 Spec Zone Remap 控制面。
 - [V0.5.2_HOST_DRIVEN_RETRY.md](V0.5.2_HOST_DRIVEN_RETRY.md)：UECC retry stage、Host 重发与 research compatibility。
 - [V0.5.3_BLOCK_REPLAY.md](V0.5.3_BLOCK_REPLAY.md)：Host-facing ReplayPlan 与 Program Failure 元数据。
 - [V0.5.4_RELIABILITY_V2.md](V0.5.4_RELIABILITY_V2.md)：Read Disturb、Retention Age 与可靠性 Refresh。

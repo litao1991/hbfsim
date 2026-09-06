@@ -1,6 +1,7 @@
 #include "hbfsim/simulator.h"
 
 #include <stdexcept>
+#include <unordered_set>
 
 namespace hbfsim {
 
@@ -27,6 +28,9 @@ std::uint64_t Simulator::start_host_refresh(std::uint64_t logical_addr) {
 
 std::uint64_t Simulator::start_host_rewrite(std::uint64_t logical_addr,
                                             HostRewriteReason reason) {
+  if (config_.simulation_profile != SimulationProfile::MediaResearch &&
+      !system_.mapper().media_management_mapping())
+    return start_spec_host_rewrite(logical_addr, reason);
   auto* mapping = system_.mapper().media_management_mapping();
   if (!mapping)
     throw std::runtime_error("HOST_REWRITE_REQUIRES_HOST_MANAGED_MAPPING");
@@ -44,6 +48,15 @@ std::uint64_t Simulator::start_host_rewrite(std::uint64_t logical_addr,
       static_cast<std::uint64_t>(source.next_program_slot) * config_.page_size,
       reason);
   return start_host_replay(plan.id);
+}
+
+std::uint64_t Simulator::start_spec_host_rewrite(
+    std::uint64_t logical_addr, HostRewriteReason reason) {
+  if (config_.simulation_profile == SimulationProfile::MediaResearch)
+    throw std::runtime_error("SPEC_REWRITE_REQUIRES_HBF_SPEC_PROFILE");
+  const auto& plan = system_.host_rewrite_engine().record_spec(
+      system_.spec_block_addressing().plan(0, logical_addr, reason));
+  return start_spec_host_replay(plan.id);
 }
 
 std::optional<RefreshDecision> Simulator::refresh_required() const {
@@ -117,11 +130,41 @@ std::uint64_t Simulator::start_host_replay(std::uint64_t replay_plan_id) {
   return id;
 }
 
+std::uint64_t Simulator::start_spec_host_replay(std::uint64_t replay_plan_id) {
+  if (config_.simulation_profile == SimulationProfile::MediaResearch)
+    throw std::runtime_error("SPEC_REPLAY_REQUIRES_HBF_SPEC_PROFILE");
+  const auto& plan = system_.host_rewrite_engine().spec_plan(replay_plan_id);
+  HostReplayJob job;
+  job.id = system_.host_rewrite_engine().next_job_id();
+  job.plan_id = plan.id;
+  job.reason = plan.reason;
+  job.source = source_for(plan.reason);
+  job.slot_limit = static_cast<std::uint32_t>(plan.page_global_addresses.size());
+  job.start_time = now_;
+  job.spec_block_replay = true;
+  job.spec_page_addresses = plan.page_global_addresses;
+  const auto id = job.id;
+  system_.host_rewrite_engine().jobs().emplace(id, std::move(job));
+  advance_host_replay(id, now_);
+  return id;
+}
+
 void Simulator::advance_host_replay(std::uint64_t job_id, SimTime now) {
   auto job_it = system_.replay_manager().jobs().find(job_id);
   if (job_it == system_.replay_manager().jobs().end()) return;
   auto& job = job_it->second;
   if (job.stage != HostReplayStage::Programming) return;
+  if (job.spec_block_replay) {
+    if (job.next_slot < job.spec_page_addresses.size()) {
+      enqueue_host_replay_program(job_id, job.next_slot++, now);
+      return;  // The Host sends one complete 4KiB Block page at a time.
+    }
+    if (job.measured)
+      stats_.record_host_rewrite_job(job.source, false, now - job.start_time);
+    job.stage = HostReplayStage::Complete;
+    system_.host_rewrite_engine().jobs().erase(job_it);
+    return;
+  }
   auto* mapping = system_.mapper().media_management_mapping();
   const auto& source = mapping->descriptor(job.source_stripe);
   while (job.next_slot < job.slot_limit) {
@@ -148,10 +191,19 @@ void Simulator::advance_host_replay(std::uint64_t job_id, SimTime now) {
 void Simulator::enqueue_host_replay_program(std::uint64_t job_id,
                                             std::uint32_t slot, SimTime now) {
   auto& job = system_.replay_manager().jobs().at(job_id);
-  auto* mapping = system_.mapper().media_management_mapping();
-  const auto& destination = mapping->descriptor(job.destination_stripe);
-  const auto lpn = destination.logical_base_lpn + slot;
-  const auto address = mapping->reserve_program(job.destination_stripe, lpn);
+  std::uint64_t lpn = 0;
+  PhysicalAddr address;
+  if (job.spec_block_replay) {
+    if (slot >= job.spec_page_addresses.size())
+      throw std::logic_error("SPEC_REPLAY_SLOT_OUT_OF_RANGE");
+    lpn = job.spec_page_addresses.at(slot) / config_.page_size;
+    address = system_.mapper().prepare_write(lpn);
+  } else {
+    auto* mapping = system_.mapper().media_management_mapping();
+    const auto& destination = mapping->descriptor(job.destination_stripe);
+    lpn = destination.logical_base_lpn + slot;
+    address = mapping->reserve_program(job.destination_stripe, lpn);
+  }
 
   Request request;
   request.id = next_request_id_++;
@@ -211,6 +263,19 @@ void Simulator::handle_host_replay_completion(std::uint64_t job_id,
   auto job_it = system_.replay_manager().jobs().find(job_id);
   if (job_it == system_.replay_manager().jobs().end()) return;
   auto& job = job_it->second;
+  if (job.spec_block_replay) {
+    if (op != OpType::Write || slot >= job.slot_limit)
+      throw std::logic_error("SPEC_REPLAY_PROGRAM_INVARIANT");
+    if (failed) {
+      job.stage = HostReplayStage::Failed;
+      if (job.measured)
+        stats_.record_host_rewrite_job(job.source, true, now - job.start_time);
+      system_.host_rewrite_engine().jobs().erase(job_it);
+      return;
+    }
+    advance_host_replay(job_id, now);
+    return;
+  }
   auto* mapping = system_.mapper().media_management_mapping();
   if (job.stage == HostReplayStage::ErasingSource ||
       job.stage == HostReplayStage::CleaningDestination) {
@@ -246,6 +311,72 @@ void Simulator::handle_host_replay_completion(std::uint64_t job_id,
     return;
   }
   advance_host_replay(job_id, now);
+}
+
+HbfRegisterResult Simulator::read_register(std::uint32_t channel,
+                                            std::uint32_t offset) const {
+  return system_.registers().read(channel, offset);
+}
+
+HbfRegisterResult Simulator::write_register(std::uint32_t channel,
+                                             std::uint32_t offset,
+                                             std::uint64_t value) {
+  return system_.registers().write(channel, offset, value);
+}
+
+bool Simulator::spec_channel_idle(std::uint32_t channel) const {
+  // Quiesce is scoped to the Channel being remapped.  Work on another
+  // independently owned Channel must not unnecessarily block this command.
+  for (const auto& [_, subrequest] : subrequests_) {
+    if (subrequest.paddr.channel == channel) return false;
+  }
+  for (const auto& [_, request] : requests_) {
+    try {
+      if (system_.channels().translate(request.logical_addr).channel == channel)
+        return false;
+    } catch (const std::out_of_range&) {
+      return false;
+    }
+  }
+  return true;
+}
+
+HbfAdminResult Simulator::submit_admin(const HbfAdminCommand& command) {
+  if (config_.simulation_profile == SimulationProfile::MediaResearch)
+    return {HbfStatus::InvalidUserField, "ADMIN_REQUIRES_HBF_SPEC_PROFILE"};
+  if (command.opcode == HbfAdminOpcode::RegisterReadWrite) {
+    if (!command.register_write)
+      return {HbfStatus::InvalidUserField, "USE_READ_REGISTER_FOR_ADMIN_READ"};
+    const auto result = write_register(command.channel, command.register_offset,
+                                       command.register_value);
+    return {result.status, result.reason};
+  }
+  if (command.opcode == HbfAdminOpcode::ReducedCapacity) {
+    const auto result = read_register(command.channel,
+                                      hbf_register::kReducedCapacity);
+    return {result.status, result.reason};
+  }
+  if (command.opcode != HbfAdminOpcode::ZoneRemapping)
+    return {HbfStatus::InvalidUserField, "UNIMPLEMENTED_ADMIN_OPCODE"};
+  if (!system_.registers().host_controlled_wear_leveling(command.channel))
+    return {HbfStatus::InvalidUserField, "ZONE_REMAP_REQUIRES_HOST_CONTROLLED_WL"};
+  if (!system_.spec_zones().enabled())
+    return {HbfStatus::InvalidUserField, "SPEC_ZONE_REMAP_NOT_CONFIGURED"};
+  if (!spec_channel_idle(command.channel))
+    return {HbfStatus::TemporarilyRestricted, "ZONE_REMAP_REQUIRES_QUIESCED_CHANNEL"};
+  if (command.zone_swaps.empty())
+    return {HbfStatus::InvalidUserField, "ZONE_REMAP_REQUIRES_SWAP_PAIRS"};
+  std::unordered_set<std::uint32_t> used;
+  for (const auto& [source, destination] : command.zone_swaps) {
+    if (source >= system_.spec_zones().zones_per_channel() ||
+        destination >= system_.spec_zones().zones_per_channel() ||
+        source == destination || !used.insert(source).second ||
+        !used.insert(destination).second)
+      return {HbfStatus::InvalidUserField, "INVALID_OR_DUPLICATE_ZONE_ID"};
+  }
+  for (const auto& [source, destination] : command.zone_swaps)
+    system_.spec_zones().swap(command.channel, source, destination);
+  return {HbfStatus::Success, {}};
 }
 
 }  // namespace hbfsim

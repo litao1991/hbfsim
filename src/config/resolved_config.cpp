@@ -94,6 +94,8 @@ void Config::write_resolved_yaml(const std::string& path) const {
               : "regular_read_boundary_spec")
       << "\n    aggregation_window_ns: " << batch_read_aggregation_window_ns
       << "\n    max_pages: " << batch_read_max_pages
+      << "\n  spec_zones:\n    per_channel: " << spec_zones_per_channel
+      << "\n    size_pages: " << spec_zone_size_pages
       << "\n  host_driven_read_retry: "
       << boolean(host_driven_read_retry)
       << "\n  dlu:\n    size: " << dlu_size

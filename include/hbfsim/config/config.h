@@ -99,6 +99,10 @@ struct Config {
   std::uint64_t refresh_read_count_threshold = 0;
   std::uint32_t zone_count = 0;
   std::uint64_t zone_size_pages = 0;
+  // HBF v0.7 Zones are local to a UCIe Channel. These are intentionally
+  // separate from the MediaResearch stripe-zone policy above.
+  std::uint32_t spec_zones_per_channel = 0;
+  std::uint64_t spec_zone_size_pages = 0;
   std::uint64_t wear_leveling_min_user_writes = 1;
   double wear_leveling_min_pec_delta = 0.0;
   double retry_ber_multiplier = 0.25;

@@ -367,6 +367,10 @@ Config Config::from_yaml_file(const std::string& path) {
   detail::assign_if(values, "refresh.read_count_threshold", config.refresh_read_count_threshold, integer);
   detail::assign_if(values, "zones.count", config.zone_count, integer);
   detail::assign_if(values, "zones.size_pages", config.zone_size_pages, integer);
+  detail::assign_if(values, "hbf.spec_zones.per_channel",
+                    config.spec_zones_per_channel, integer);
+  detail::assign_if(values, "hbf.spec_zones.size_pages",
+                    config.spec_zone_size_pages, integer);
   detail::assign_if(values, "wear_leveling.min_user_writes",
                     config.wear_leveling_min_user_writes, integer);
   detail::assign_if(values, "wear_leveling.min_pec_delta",
@@ -460,6 +464,8 @@ void Config::validate() const {
     if (planes_per_stack % host_channels_per_stack != 0)
       throw std::runtime_error(
           "spec profiles cannot split a Channel NAND pool across Stacks");
+    if (page_size % 64 != 0)
+      throw std::runtime_error("spec profiles require a 64B-integral NAND Page");
   }
   if (max_active_planes_per_die > planes_per_die ||
       max_active_planes_per_stack > planes_per_stack)
@@ -537,6 +543,26 @@ void Config::validate() const {
   if ((zone_count == 0) != (zone_size_pages == 0))
     throw std::runtime_error(
         "zone_count and zone_size_pages must be configured together");
+  if ((spec_zones_per_channel == 0) != (spec_zone_size_pages == 0))
+    throw std::runtime_error(
+        "hbf.spec_zones.per_channel and size_pages must be configured together");
+  if (spec_zones_per_channel != 0) {
+    if (simulation_profile == SimulationProfile::MediaResearch)
+      throw std::runtime_error("spec_zones require an HBF Spec profile");
+    const auto channel_count = hbf_channel_count == 0
+                                   ? static_cast<std::uint64_t>(stacks) *
+                                         host_channels_per_stack
+                                   : hbf_channel_count;
+    const auto total_pages = static_cast<std::uint64_t>(stacks) *
+                             dies_per_stack * planes_per_die *
+                             blocks_per_plane * pages_per_block;
+    if (total_pages % channel_count != 0 ||
+        static_cast<std::uint64_t>(spec_zones_per_channel) *
+                spec_zone_size_pages !=
+            total_pages / channel_count)
+      throw std::runtime_error(
+          "spec zones must exactly partition every HBF Channel capacity");
+  }
   if (wear_leveling_min_pec_delta < 0.0)
     throw std::runtime_error("wear_leveling.min_pec_delta must be non-negative");
   const auto max_u64 = std::numeric_limits<std::uint64_t>::max();

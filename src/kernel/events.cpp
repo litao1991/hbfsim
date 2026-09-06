@@ -346,6 +346,18 @@ void Simulator::handle(const Event& event) {
           } else {
             system_.replay_manager().record(*failure_notice, config_.page_size);
           }
+        } else if (config_.simulation_profile !=
+                   SimulationProfile::MediaResearch) {
+          auto reason = HostRewriteReason::ProgramFailure;
+          if (sub.host_replay_job_id) {
+            const auto job = system_.host_rewrite_engine().jobs().find(
+                *sub.host_replay_job_id);
+            if (job != system_.host_rewrite_engine().jobs().end())
+              reason = job->second.reason;
+          }
+          system_.host_rewrite_engine().record_spec(
+              system_.spec_block_addressing().plan(
+                  0, sub.lpn * config_.page_size, reason));
         }
         sub.failed = true;
         sub.status =
