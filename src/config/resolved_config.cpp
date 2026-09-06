@@ -191,6 +191,9 @@ void Config::write_resolved_yaml(const std::string& path) const {
       << "\n  read_count_threshold: " << refresh_read_count_threshold
       << "\nzones:\n  count: " << zone_count
       << "\n  size_pages: " << zone_size_pages
+      << "\nwear_leveling:\n  min_user_writes: "
+      << wear_leveling_min_user_writes
+      << "\n  min_pec_delta: " << wear_leveling_min_pec_delta
       << "\ncopy_engine:\n  max_inflight_reads: "
       << copy_max_inflight_reads
       << "\n  max_inflight_programs: " << copy_max_inflight_programs

@@ -4,8 +4,30 @@
 
 namespace hbfsim {
 
+namespace {
+
+TransactionSource source_for(HostRewriteReason reason) {
+  switch (reason) {
+    case HostRewriteReason::ProgramFailure: return TransactionSource::HostReplay;
+    case HostRewriteReason::Refresh: return TransactionSource::HostRefresh;
+    case HostRewriteReason::WearLevel: return TransactionSource::HostWearLevel;
+  }
+  return TransactionSource::HostReplay;
+}
+
+}  // namespace
+
 std::uint64_t Simulator::start_host_rewrite(std::uint64_t logical_addr) {
-  auto* mapping = system_.mapper().stripe_mapping();
+  return start_host_rewrite(logical_addr, HostRewriteReason::ProgramFailure);
+}
+
+std::uint64_t Simulator::start_host_refresh(std::uint64_t logical_addr) {
+  return start_host_rewrite(logical_addr, HostRewriteReason::Refresh);
+}
+
+std::uint64_t Simulator::start_host_rewrite(std::uint64_t logical_addr,
+                                            HostRewriteReason reason) {
+  auto* mapping = system_.mapper().media_management_mapping();
   if (!mapping)
     throw std::runtime_error("HOST_REWRITE_REQUIRES_HOST_MANAGED_MAPPING");
   const auto lpn = logical_addr / config_.page_size;
@@ -19,7 +41,8 @@ std::uint64_t Simulator::start_host_rewrite(std::uint64_t logical_addr) {
   const auto slot = source.next_program_slot - 1;
   const auto& plan = system_.replay_manager().record(
       *stripe, slot, source.valid_slots, mapping->address_for(*stripe, slot),
-      static_cast<std::uint64_t>(source.next_program_slot) * config_.page_size);
+      static_cast<std::uint64_t>(source.next_program_slot) * config_.page_size,
+      reason);
   return start_host_replay(plan.id);
 }
 
@@ -44,7 +67,7 @@ std::optional<RefreshDecision> Simulator::refresh_required() const {
 std::optional<WearLevelPlan> Simulator::start_host_wear_leveling() {
   const auto plan = system_.wear_level_manager().decide(system_.zones());
   if (!plan) return std::nullopt;
-  auto* mapping = system_.mapper().stripe_mapping();
+  auto* mapping = system_.mapper().media_management_mapping();
   if (!mapping)
     throw std::runtime_error("HOST_WEAR_LEVELING_REQUIRES_HOST_MANAGED_MAPPING");
   system_.zones().remap(plan->logical_zone, plan->destination_physical_zone);
@@ -52,16 +75,17 @@ std::optional<WearLevelPlan> Simulator::start_host_wear_leveling() {
   for (const auto& stripe : mapping->active_stripes()) {
     const auto& descriptor = mapping->descriptor(stripe);
     if (descriptor.state == StripeState::Sealed &&
-        (descriptor.logical_base_lpn / config_.zone_size_pages) %
-                config_.zone_count == plan->logical_zone)
+        system_.zones().logical_zone_of(descriptor.logical_base_lpn) ==
+            plan->logical_zone)
       bases.push_back(descriptor.logical_base_lpn * config_.page_size);
   }
-  for (const auto base : bases) start_host_rewrite(base);
+  for (const auto base : bases)
+    start_host_rewrite(base, HostRewriteReason::WearLevel);
   return plan;
 }
 
 std::uint64_t Simulator::start_host_replay(std::uint64_t replay_plan_id) {
-  auto* mapping = system_.mapper().stripe_mapping();
+  auto* mapping = system_.mapper().media_management_mapping();
   if (!mapping)
     throw std::runtime_error("HOST_REPLAY_REQUIRES_HOST_MANAGED_MAPPING");
   const auto& plan = system_.replay_manager().plan(replay_plan_id);
@@ -81,6 +105,8 @@ std::uint64_t Simulator::start_host_replay(std::uint64_t replay_plan_id) {
   HostReplayJob job;
   job.id = system_.replay_manager().next_job_id();
   job.plan_id = plan.id;
+  job.reason = plan.reason;
+  job.source = source_for(plan.reason);
   job.source_stripe = plan.source_stripe;
   job.destination_stripe = destination;
   job.slot_limit = source.next_program_slot;
@@ -96,7 +122,7 @@ void Simulator::advance_host_replay(std::uint64_t job_id, SimTime now) {
   if (job_it == system_.replay_manager().jobs().end()) return;
   auto& job = job_it->second;
   if (job.stage != HostReplayStage::Programming) return;
-  auto* mapping = system_.mapper().stripe_mapping();
+  auto* mapping = system_.mapper().media_management_mapping();
   const auto& source = mapping->descriptor(job.source_stripe);
   while (job.next_slot < job.slot_limit) {
     const auto slot = job.next_slot++;
@@ -114,7 +140,7 @@ void Simulator::advance_host_replay(std::uint64_t job_id, SimTime now) {
   if (destination.state == StripeState::Open) mapping->seal(job.destination_stripe);
   mapping->remap_commit(job.source_stripe, job.destination_stripe);
   if (job.measured)
-    stats_.record_remap_commit(TransactionSource::HostReplay,
+    stats_.record_remap_commit(job.source,
                                now - job.start_time);
   enqueue_host_replay_erases(job_id, now);
 }
@@ -122,7 +148,7 @@ void Simulator::advance_host_replay(std::uint64_t job_id, SimTime now) {
 void Simulator::enqueue_host_replay_program(std::uint64_t job_id,
                                             std::uint32_t slot, SimTime now) {
   auto& job = system_.replay_manager().jobs().at(job_id);
-  auto* mapping = system_.mapper().stripe_mapping();
+  auto* mapping = system_.mapper().media_management_mapping();
   const auto& destination = mapping->descriptor(job.destination_stripe);
   const auto lpn = destination.logical_base_lpn + slot;
   const auto address = mapping->reserve_program(job.destination_stripe, lpn);
@@ -135,7 +161,7 @@ void Simulator::enqueue_host_replay_program(std::uint64_t job_id,
   request.size = config_.page_size;
   request.measured = job.measured;
   request.internal = true;
-  request.source = TransactionSource::HostReplay;
+  request.source = job.source;
   request.host_route = system_.host_router().route(request.logical_addr, address);
   const auto command = reserve_host(request.host_route, HostLinkDirection::Command,
                                     now, 64, request.measured);
@@ -149,7 +175,7 @@ void Simulator::enqueue_host_replay_program(std::uint64_t job_id,
   sub.id = next_subrequest_id_++;
   sub.parent_id = request.id;
   sub.op = OpType::Write;
-  sub.source = TransactionSource::HostReplay;
+  sub.source = job.source;
   sub.lpn = lpn;
   sub.bytes = config_.page_size;
   sub.paddr = address;
@@ -172,10 +198,10 @@ void Simulator::enqueue_host_replay_program(std::uint64_t job_id,
 
 void Simulator::enqueue_host_replay_erases(std::uint64_t job_id, SimTime now) {
   auto& job = system_.replay_manager().jobs().at(job_id);
-  auto* mapping = system_.mapper().stripe_mapping();
+  auto* mapping = system_.mapper().media_management_mapping();
   job.stage = HostReplayStage::ErasingSource;
   job.pending_erases = mapping->stripe_width();
-  enqueue_stripe_erases(job.source_stripe, TransactionSource::HostReplay,
+  enqueue_stripe_erases(job.source_stripe, job.source,
                         job.measured, std::nullopt, now, job_id);
 }
 
@@ -185,21 +211,21 @@ void Simulator::handle_host_replay_completion(std::uint64_t job_id,
   auto job_it = system_.replay_manager().jobs().find(job_id);
   if (job_it == system_.replay_manager().jobs().end()) return;
   auto& job = job_it->second;
-  auto* mapping = system_.mapper().stripe_mapping();
+  auto* mapping = system_.mapper().media_management_mapping();
   if (job.stage == HostReplayStage::ErasingSource ||
       job.stage == HostReplayStage::CleaningDestination) {
     if (op != OpType::Erase) throw std::logic_error("HOST_REPLAY_ERASE_INVARIANT");
     if (failed || job.pending_erases == 0) {
       job.stage = HostReplayStage::Failed;
       if (job.measured)
-        stats_.record_host_replay_job(true, now - job.start_time);
+        stats_.record_host_rewrite_job(job.source, true, now - job.start_time);
       system_.replay_manager().jobs().erase(job_it);
       return;
     }
     if (--job.pending_erases != 0) return;
     if (job.measured)
-      stats_.record_host_replay_job(
-          job.stage == HostReplayStage::CleaningDestination,
+      stats_.record_host_rewrite_job(
+          job.source, job.stage == HostReplayStage::CleaningDestination,
           now - job.start_time);
     job.stage = HostReplayStage::Complete;
     system_.replay_manager().jobs().erase(job_it);
@@ -215,8 +241,7 @@ void Simulator::handle_host_replay_completion(std::uint64_t job_id,
     if (job.measured) stats_.record_aborted_migration();
     job.stage = HostReplayStage::CleaningDestination;
     job.pending_erases = mapping->stripe_width();
-    enqueue_stripe_erases(job.destination_stripe,
-                          TransactionSource::HostReplay, job.measured,
+    enqueue_stripe_erases(job.destination_stripe, job.source, job.measured,
                           std::nullopt, now, job_id);
     return;
   }

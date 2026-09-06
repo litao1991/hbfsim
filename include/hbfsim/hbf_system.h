@@ -47,8 +47,12 @@ class HbfSystem {
   const BaseDieController& controller() const { return controller_; }
   CopyEngine& copy_engine() { return copy_engine_; }
   const CopyEngine& copy_engine() const { return copy_engine_; }
-  HostReplayManager& replay_manager() { return replay_manager_; }
-  const HostReplayManager& replay_manager() const { return replay_manager_; }
+  HostRewriteEngine& host_rewrite_engine() { return host_rewrite_engine_; }
+  const HostRewriteEngine& host_rewrite_engine() const {
+    return host_rewrite_engine_;
+  }
+  HostReplayManager& replay_manager() { return host_rewrite_engine_; }
+  const HostReplayManager& replay_manager() const { return host_rewrite_engine_; }
   AddressMapper& mapper() { return mapper_; }
   const AddressMapper& mapper() const { return mapper_; }
   HostRouter& host_router() { return host_router_; }
@@ -92,7 +96,7 @@ class HbfSystem {
   NandMediaSystem media_;
   BaseDieController controller_;
   CopyEngine copy_engine_;
-  HostReplayManager replay_manager_;
+  HostRewriteEngine host_rewrite_engine_;
   HostGcManager host_gc_manager_;
   RefreshManager refresh_manager_;
   ZoneManager zones_;

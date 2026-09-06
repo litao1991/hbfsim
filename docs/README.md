@@ -1,6 +1,6 @@
 # HBFSim 设计文档
 
-本目录记录 HBFSim v0.6.4 的架构、模型语义和实验方法。文档以当前代码实现为准。
+本目录记录 HBFSim v0.7.3 的架构、模型语义和实验方法。文档以当前代码实现为准。
 
 ## 文档索引
 
@@ -34,6 +34,7 @@
 - [V0.5.4_RELIABILITY_V2.md](V0.5.4_RELIABILITY_V2.md)：Read Disturb、Retention Age 与可靠性 Refresh。
 - [V0.5.5_ZONES_WEAR.md](V0.5.5_ZONES_WEAR.md)：Zone metadata、remap 与热冷 P/E 观察。
 - [V0.6_HOST_MEDIA_MANAGEMENT.md](V0.6_HOST_MEDIA_MANAGEMENT.md)：Host Replay/Refresh、Zone placement、Host Wear Leveling 与 Reduced Capacity API。
+- [V0.7_SEMANTIC_CONVERGENCE.md](V0.7_SEMANTIC_CONVERGENCE.md)：Host Rewrite 原因分离、Page retention、Zone/Wear v2、映射契约与执行边界。
 
 ## 设计定位
 

@@ -52,9 +52,7 @@ class Simulator {
   // the plan.  Payload bytes are timed on the host link but not stored.
   std::uint64_t start_host_replay(std::uint64_t replay_plan_id);
   std::uint64_t start_host_rewrite(std::uint64_t logical_addr);
-  std::uint64_t start_host_refresh(std::uint64_t logical_addr) {
-    return start_host_rewrite(logical_addr);
-  }
+  std::uint64_t start_host_refresh(std::uint64_t logical_addr);
   std::optional<RefreshDecision> refresh_required() const;
   std::optional<WearLevelPlan> start_host_wear_leveling();
   std::size_t active_host_replay_jobs() const {
@@ -154,6 +152,8 @@ class Simulator {
   void start_ready_recoveries(SimTime now);
   void reset_copy_attempt(CopyJob& job);
   void handle_copy_failure_drain(std::uint64_t job_id, SimTime now);
+  std::uint64_t start_host_rewrite(std::uint64_t logical_addr,
+                                   HostRewriteReason reason);
   void enqueue_host_replay_program(std::uint64_t job_id,
                                    std::uint32_t slot, SimTime now);
   void advance_host_replay(std::uint64_t job_id, SimTime now);

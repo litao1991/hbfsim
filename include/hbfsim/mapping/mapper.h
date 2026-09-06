@@ -32,6 +32,10 @@ class AddressMapper {
   std::uint32_t flat_plane(const PhysicalAddr& addr) const;
   StripeMappingTable* stripe_mapping() { return stripes_.get(); }
   const StripeMappingTable* stripe_mapping() const { return stripes_.get(); }
+  IMediaManagementMapping* media_management_mapping() { return stripes_.get(); }
+  const IMediaManagementMapping* media_management_mapping() const {
+    return stripes_.get();
+  }
   bool validate_generation(const PhysicalAddr& paddr) const;
   void set_zone_resolver(std::uint32_t zone_count,
                          std::function<std::uint32_t(std::uint64_t)> resolver) {

@@ -201,7 +201,10 @@ std::uint64_t NandMediaSystem::block_read_count(
 SimTime NandMediaSystem::block_retention_age(
     const PhysicalAddr& address, SimTime now) const {
   const auto& block = plane(address).blocks.at(address.block);
-  const auto since = std::max(block.last_program_time, block.last_refresh_time);
+  auto since = block.last_program_time;
+  if (address.page < block.page_program_times.size())
+    since = block.page_program_times.at(address.page);
+  since = std::max(since, block.last_refresh_time);
   return now > since ? now - since : 0;
 }
 
@@ -281,6 +284,9 @@ void NandMediaSystem::complete_program(
   ++block.next_program_page;
   ++block.valid_pages;
   block.last_program_time = now;
+  if (block.page_program_times.empty())
+    block.page_program_times.resize(config_.pages_per_block, 0);
+  block.page_program_times.at(address.page) = now;
   if (block.next_program_page == config_.pages_per_block)
     block.state = BlockState::Closed;
 }
@@ -309,6 +315,7 @@ std::uint32_t NandMediaSystem::complete_erase(
   block.valid_bitmap.clear();
   block.invalid_bitmap.clear();
   block.failed_bitmap.clear();
+  block.page_program_times.clear();
   return ++block.erase_count;
 }
 

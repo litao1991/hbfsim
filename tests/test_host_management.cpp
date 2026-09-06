@@ -50,13 +50,18 @@ int main() {
     const auto after = simulator.system().mapper().lookup(0);
     CHECK(after.has_value());
     CHECK(after->physical_stripe != before->physical_stripe);
-    CHECK(simulator.stats().source_bytes(hbfsim::TransactionSource::HostReplay,
+    CHECK(simulator.stats().source_bytes(hbfsim::TransactionSource::HostRefresh,
                                          hbfsim::OpType::Write) == 8192);
+    CHECK(simulator.stats().host_rewrite_jobs(
+              hbfsim::TransactionSource::HostRefresh, false) == 1);
   }
   {
     hbfsim::Simulator simulator(config());
     simulator.submit({0, hbfsim::OpType::Write, 0, 8192, 0});
     simulator.run();
+    const auto before = simulator.system().mapper().lookup(0);
+    CHECK(before.has_value());
+    simulator.system().zones().record_physical_erase(*before, 100);
     const auto plan = simulator.start_host_wear_leveling();
     CHECK(plan.has_value());
     CHECK(plan->logical_zone == 0);
@@ -64,7 +69,12 @@ int main() {
     simulator.run();
     const auto mapped = simulator.system().mapper().lookup(0);
     CHECK(mapped.has_value());
-    CHECK(mapped->physical_stripe % 2 == 1);
+    CHECK(mapped->physical_stripe >= 3);
+    CHECK(simulator.stats().source_bytes(
+              hbfsim::TransactionSource::HostWearLevel,
+              hbfsim::OpType::Write) == 8192);
+    CHECK(simulator.stats().host_rewrite_jobs(
+              hbfsim::TransactionSource::HostWearLevel, false) == 1);
   }
   {
     auto reduced_config = config();

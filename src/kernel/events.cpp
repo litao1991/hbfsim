@@ -7,7 +7,9 @@ namespace hbfsim {
 void Simulator::finish_program(SubRequest& sub, SimTime now) {
   system_.media().complete_program(sub.paddr, sub.old_paddr, now);
   system_.mapper().commit_write(sub.lpn, sub.paddr, now);
-  system_.zones().record_write(sub.lpn);
+  system_.zones().record_physical_program(sub.paddr);
+  if (sub.source == TransactionSource::User)
+    system_.zones().record_user_write(sub.lpn);
 }
 
 void Simulator::complete_subrequest(std::uint64_t id, SimTime now) {
@@ -271,7 +273,7 @@ void Simulator::handle(const Event& event) {
         retire_block(sub.paddr);
       } else {
         const auto erase_count = system_.media().complete_erase(sub.paddr);
-        system_.zones().record_block_erase(sub.lpn, erase_count);
+        system_.zones().record_physical_erase(sub.paddr, erase_count);
         system_.mapper().on_erase(sub.paddr);
         if (config_.max_erase_cycles != 0 &&
             erase_count >= config_.max_erase_cycles) {
@@ -332,12 +334,15 @@ void Simulator::handle(const Event& event) {
           if (sub.host_replay_job_id) {
             const auto& job = system_.replay_manager().jobs().at(
                 *sub.host_replay_job_id);
-            const auto& source = system_.mapper().stripe_mapping()->descriptor(
+            const auto& source = system_.mapper().media_management_mapping()->descriptor(
                 job.source_stripe);
+            const auto failed_slot = sub.copy_slot.value_or(
+                failure_notice->failed_slot);
             system_.replay_manager().record(
-                job.source_stripe, job.slot_limit - 1, source.valid_slots,
+                job.source_stripe, failed_slot, source.valid_slots,
                 sub.paddr, static_cast<std::uint64_t>(job.slot_limit) *
-                               config_.page_size);
+                               config_.page_size,
+                job.reason);
           } else {
             system_.replay_manager().record(*failure_notice, config_.page_size);
           }

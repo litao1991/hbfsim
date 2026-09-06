@@ -137,7 +137,9 @@ StripeId StripeMappingTable::allocate_internal(std::uint64_t base,
     if (desired_zone >= zone_count_)
       throw std::logic_error("ZONE_RESOLVER_RETURNED_INVALID_ZONE");
     selected = std::find_if(free_stripes_.begin(), free_stripes_.end(),
-        [&](std::uint64_t physical) { return physical % zone_count_ == desired_zone; });
+        [&](std::uint64_t physical) {
+          return physical * zone_count_ / descriptors_.size() == desired_zone;
+        });
     if (selected == free_stripes_.end())
       throw std::runtime_error("NO_FREE_PHYSICAL_STRIPE_IN_ZONE");
   }
@@ -265,7 +267,9 @@ PhysicalAddr StripeMappingTable::preview_program(std::uint64_t lpn) const {
   if (zone_resolver_ && zone_count_ != 0) {
     const auto desired_zone = zone_resolver_(base);
     selected = std::find_if(free_stripes_.begin(), free_stripes_.end(),
-        [&](std::uint64_t physical) { return physical % zone_count_ == desired_zone; });
+        [&](std::uint64_t physical) {
+          return physical * zone_count_ / descriptors_.size() == desired_zone;
+        });
     if (selected == free_stripes_.end())
       throw std::runtime_error("NO_FREE_PHYSICAL_STRIPE_IN_ZONE");
   }

@@ -199,6 +199,26 @@ std::uint64_t StatsCollector::source_bytes(TransactionSource source,
   return it == source_bytes_.end() ? 0 : it->second;
 }
 
+std::uint64_t StatsCollector::host_rewrite_jobs(TransactionSource source,
+                                                bool failed) const {
+  const auto& values = failed ? failed_host_rewrite_jobs_
+                              : completed_host_rewrite_jobs_;
+  const auto it = values.find(source);
+  return it == values.end() ? 0 : it->second;
+}
+
+double StatsCollector::host_rewrite_mean_latency_ns(
+    TransactionSource source) const {
+  const auto it = host_rewrite_latencies_.find(source);
+  return it == host_rewrite_latencies_.end() ? 0.0 : it->second.mean();
+}
+
+double StatsCollector::host_rewrite_p95_latency_ns(
+    TransactionSource source) const {
+  const auto it = host_rewrite_latencies_.find(source);
+  return it == host_rewrite_latencies_.end() ? 0.0 : it->second.percentile(0.95);
+}
+
 void StatsCollector::record_queue_depth(SimTime time, std::uint64_t reads,
                                         std::uint64_t writes,
                                         std::uint64_t erases,
@@ -308,11 +328,20 @@ void StatsCollector::write(const std::string& output_dir,
           << "\nrefresh_deadline_misses," << refresh_deadline_misses_
           << "\nrefresh_deferred_no_space,"
           << refresh_deferred_no_space_
-          << "\ncompleted_host_replay_jobs," << completed_host_replay_jobs_
-          << "\nfailed_host_replay_jobs," << failed_host_replay_jobs_
-          << "\nhost_replay_mean_latency_ns," << host_replay_latencies_.mean()
-          << "\nhost_replay_p95_latency_ns,"
-          << host_replay_latencies_.percentile(0.95)
+          << "\ncompleted_host_replay_jobs,"
+          << host_rewrite_jobs(TransactionSource::HostReplay, false)
+          << "\nfailed_host_replay_jobs,"
+          << host_rewrite_jobs(TransactionSource::HostReplay, true)
+          << "\ncompleted_host_refresh_jobs,"
+          << host_rewrite_jobs(TransactionSource::HostRefresh, false)
+          << "\ncompleted_host_wear_level_jobs,"
+          << host_rewrite_jobs(TransactionSource::HostWearLevel, false)
+          << "\nhost_replay_mean_latency_ns,"
+          << host_rewrite_mean_latency_ns(TransactionSource::HostReplay)
+          << "\nhost_refresh_mean_latency_ns,"
+          << host_rewrite_mean_latency_ns(TransactionSource::HostRefresh)
+          << "\nhost_wear_level_mean_latency_ns,"
+          << host_rewrite_mean_latency_ns(TransactionSource::HostWearLevel)
           << "\nhost_visible_stripes," << host_visible_stripes_
           << "\nmin_free_stripes," << min_free_stripes_
           << "\nrecovery_read_bytes,"

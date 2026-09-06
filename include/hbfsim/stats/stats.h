@@ -160,11 +160,15 @@ class StatsCollector {
   }
   void record_refresh_deferred() { ++refresh_deferred_no_space_; }
   void record_host_replay_job(bool failed, SimTime latency_ns) {
+    record_host_rewrite_job(TransactionSource::HostReplay, failed, latency_ns);
+  }
+  void record_host_rewrite_job(TransactionSource source, bool failed,
+                               SimTime latency_ns) {
     if (failed)
-      ++failed_host_replay_jobs_;
+      ++failed_host_rewrite_jobs_[source];
     else
-      ++completed_host_replay_jobs_;
-    host_replay_latencies_.record(latency_ns);
+      ++completed_host_rewrite_jobs_[source];
+    host_rewrite_latencies_[source].record(latency_ns);
   }
   void record_dlu_completed(const HbfDlu::Timing& timing);
   void record_dlu_timeout() { ++dlu_timeouts_; }
@@ -256,11 +260,14 @@ class StatsCollector {
     return refresh_deferred_no_space_;
   }
   std::uint64_t completed_host_replay_jobs() const {
-    return completed_host_replay_jobs_;
+    return host_rewrite_jobs(TransactionSource::HostReplay, false);
   }
   std::uint64_t failed_host_replay_jobs() const {
-    return failed_host_replay_jobs_;
+    return host_rewrite_jobs(TransactionSource::HostReplay, true);
   }
+  std::uint64_t host_rewrite_jobs(TransactionSource source, bool failed) const;
+  double host_rewrite_mean_latency_ns(TransactionSource source) const;
+  double host_rewrite_p95_latency_ns(TransactionSource source) const;
   std::uint64_t copy_buffer_high_watermark(
       TransactionSource source) const;
   std::size_t queue_depth_sample_count() const {
@@ -321,8 +328,6 @@ class StatsCollector {
   std::uint64_t failed_refresh_jobs_ = 0;
   std::uint64_t refresh_deadline_misses_ = 0;
   std::uint64_t refresh_deferred_no_space_ = 0;
-  std::uint64_t completed_host_replay_jobs_ = 0;
-  std::uint64_t failed_host_replay_jobs_ = 0;
   std::uint64_t completed_dlus_ = 0;
   std::uint64_t dlu_timeouts_ = 0;
   std::uint64_t dlu_overlaps_ = 0;
@@ -366,7 +371,9 @@ class StatsCollector {
   LatencyHistogram recovery_latencies_;
   LatencyHistogram gc_latencies_;
   LatencyHistogram refresh_latencies_;
-  LatencyHistogram host_replay_latencies_;
+  std::map<TransactionSource, std::uint64_t> completed_host_rewrite_jobs_;
+  std::map<TransactionSource, std::uint64_t> failed_host_rewrite_jobs_;
+  std::map<TransactionSource, LatencyHistogram> host_rewrite_latencies_;
   std::map<TransactionSource, std::uint64_t>
       copy_buffer_high_watermarks_;
   ResourceTracker resources_;

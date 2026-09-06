@@ -26,6 +26,10 @@ struct BlockMeta {
   std::vector<std::uint64_t> valid_bitmap;
   std::vector<std::uint64_t> invalid_bitmap;
   std::vector<std::uint64_t> failed_bitmap;
+  // Allocated lazily when a Block receives its first Program.  The timestamp
+  // is indexed by page and prevents later programs from resetting retention
+  // age for earlier valid pages.
+  std::vector<SimTime> page_program_times;
 };
 
 struct DieState {
@@ -46,7 +50,7 @@ struct PlaneMediaState {
 };
 
 struct PlaneControllerState {
-  static constexpr std::size_t kSourceCount = 8;
+  static constexpr std::size_t kSourceCount = 9;
   using SourceQueues =
       std::array<std::deque<std::uint64_t>, kSourceCount>;
   bool busy = false;

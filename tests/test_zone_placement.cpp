@@ -30,7 +30,7 @@ int main() {
   hbfsim::Simulator simulator(config);
   simulator.remap_zone(0, 1);
   const auto paddr = simulator.system().mapper().prepare_write(0);
-  CHECK(paddr.physical_stripe % 2 == 1);
+  CHECK(paddr.physical_stripe >= 2);
   CHECK(simulator.system().zones().physical_zone(0) == 1);
   return EXIT_SUCCESS;
 }

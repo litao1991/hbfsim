@@ -55,8 +55,9 @@ int main() {
   system.zones().record_write(1);
   system.zones().record_erase(7);
   system.zones().remap(0, 1);
-  CHECK(system.zones().hottest().logical_zone == 0);
-  CHECK(system.zones().zones().at(0).physical_zone == 1);
+  CHECK(system.zones().hottest_logical().logical_zone == 0);
+  CHECK(system.zones().physical_zone(0) == 1);
+  CHECK(system.zones().physical_zone(4) == 0);
 
   BankReadCache cache(2);
   PhysicalAddr first{0, 0, 0, 0, 0};

@@ -71,18 +71,41 @@ struct ProgramFailureNotice {
   std::uint32_t committed_slots = 0;
 };
 
-class StripeMappingTable {
+// Host-media-management flows deliberately depend on this contract rather
+// than a concrete research mapping table. Alternative Spec mapping adapters
+// can supply the same sequential placement/remap semantics.
+class IMediaManagementMapping {
+ public:
+  virtual ~IMediaManagementMapping() = default;
+  virtual std::uint32_t stripe_width() const = 0;
+  virtual StripeId allocate_replacement(std::uint64_t logical_base_lpn) = 0;
+  virtual PhysicalAddr reserve_program(const StripeId& destination,
+                                       std::uint64_t lpn) = 0;
+  virtual void reserve_hole(const StripeId& destination, std::uint64_t lpn) = 0;
+  virtual void seal(const StripeId& stripe) = 0;
+  virtual void begin_migration(const StripeId& source) = 0;
+  virtual void remap_commit(const StripeId& source,
+                            const StripeId& destination) = 0;
+  virtual void abort_migration(const StripeId& destination) = 0;
+  virtual const StripeDescriptor& descriptor(const StripeId& stripe) const = 0;
+  virtual std::optional<StripeId> active_stripe(std::uint64_t lpn) const = 0;
+  virtual std::vector<StripeId> active_stripes() const = 0;
+  virtual PhysicalAddr address_for(const StripeId& stripe,
+                                   std::uint32_t slot) const = 0;
+};
+
+class StripeMappingTable final : public IMediaManagementMapping {
  public:
   explicit StripeMappingTable(const Config& config);
 
-  std::uint32_t stripe_width() const { return stripe_width_; }
+  std::uint32_t stripe_width() const override { return stripe_width_; }
   std::uint32_t stripe_capacity() const { return stripe_capacity_; }
   std::uint32_t parallelism_group_count() const {
     return parallelism_group_count_;
   }
   std::uint32_t parallelism_group(const StripeId& stripe) const;
   StripeId allocate(std::uint64_t logical_base_lpn);
-  StripeId allocate_replacement(std::uint64_t logical_base_lpn);
+  StripeId allocate_replacement(std::uint64_t logical_base_lpn) override;
   void set_zone_resolver(std::uint32_t zone_count,
                          std::function<std::uint32_t(std::uint64_t)> resolver) {
     zone_count_ = zone_count;
@@ -91,8 +114,8 @@ class StripeMappingTable {
   PhysicalAddr preview_program(std::uint64_t lpn) const;
   PhysicalAddr reserve_program(std::uint64_t lpn);
   PhysicalAddr reserve_program(const StripeId& destination,
-                               std::uint64_t lpn);
-  void reserve_hole(const StripeId& destination, std::uint64_t lpn);
+                               std::uint64_t lpn) override;
+  void reserve_hole(const StripeId& destination, std::uint64_t lpn) override;
   void commit_program(std::uint64_t lpn, const PhysicalAddr& paddr,
                       SimTime now = 0);
   ProgramFailureNotice fail_program(std::uint64_t lpn,
@@ -102,17 +125,18 @@ class StripeMappingTable {
   std::optional<std::uint64_t> reverse_lookup(
       const PhysicalAddr& paddr, std::uint32_t expected_generation) const;
   PhysicalAddr address_for(const StripeId& stripe,
-                           std::uint32_t slot) const;
+                           std::uint32_t slot) const override;
   std::uint32_t slot_of(const PhysicalAddr& paddr) const;
-  void seal(const StripeId& stripe);
-  void begin_migration(const StripeId& source);
-  void remap_commit(const StripeId& source, const StripeId& destination);
-  void abort_migration(const StripeId& destination);
+  void seal(const StripeId& stripe) override;
+  void begin_migration(const StripeId& source) override;
+  void remap_commit(const StripeId& source,
+                    const StripeId& destination) override;
+  void abort_migration(const StripeId& destination) override;
   void on_erase(const PhysicalAddr& block_addr);
   bool retire_stripe(const PhysicalAddr& block_addr);
   bool validate_generation(const PhysicalAddr& paddr) const;
-  const StripeDescriptor& descriptor(const StripeId& stripe) const;
-  std::optional<StripeId> active_stripe(std::uint64_t lpn) const;
+  const StripeDescriptor& descriptor(const StripeId& stripe) const override;
+  std::optional<StripeId> active_stripe(std::uint64_t lpn) const override;
   std::size_t active_mapping_count() const { return active_.size(); }
   std::size_t free_stripe_count() const { return free_stripes_.size(); }
   std::size_t total_stripe_count() const { return descriptors_.size(); }
@@ -124,7 +148,7 @@ class StripeMappingTable {
   std::size_t host_visible_stripe_count() const {
     return host_visible_stripes_;
   }
-  std::vector<StripeId> active_stripes() const;
+  std::vector<StripeId> active_stripes() const override;
 
  private:
   StripeId allocate_internal(std::uint64_t logical_base_lpn,

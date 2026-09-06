@@ -57,9 +57,13 @@ struct ReplayPlan {
   std::uint32_t committed_slots = 0;
   PhysicalAddr failed_ppa;
   std::uint64_t replay_bytes = 0;
+  enum class Reason { ProgramFailure, Refresh, WearLevel };
+  Reason reason = Reason::ProgramFailure;
 };
 
-enum class HostReplayStage {
+using HostRewriteReason = ReplayPlan::Reason;
+
+enum class HostRewriteStage {
   Programming,
   ErasingSource,
   CleaningDestination,
@@ -69,10 +73,11 @@ enum class HostReplayStage {
 
 // This engine deliberately models host supplied payloads.  It contains no
 // device-side read/buffer path, unlike CopyEngine.
-struct HostReplayJob {
+struct HostRewriteJob {
   std::uint64_t id = 0;
   std::uint64_t plan_id = 0;
   TransactionSource source = TransactionSource::HostReplay;
+  HostRewriteReason reason = HostRewriteReason::ProgramFailure;
   StripeId source_stripe;
   StripeId destination_stripe;
   std::uint32_t next_slot = 0;
@@ -80,8 +85,11 @@ struct HostReplayJob {
   std::uint32_t pending_erases = 0;
   SimTime start_time = 0;
   bool measured = true;
-  HostReplayStage stage = HostReplayStage::Programming;
+  HostRewriteStage stage = HostRewriteStage::Programming;
 };
+
+using HostReplayStage = HostRewriteStage;
+using HostReplayJob = HostRewriteJob;
 
 class CopyEngine {
  public:
@@ -106,14 +114,17 @@ class CopyEngine {
   std::uint64_t next_job_id_ = 0;
 };
 
-class HostReplayManager {
+// Owns Host-payload rewrite plans/jobs.  Simulator drives DES events, while
+// this component owns rewrite reason, identity, and lifecycle state.
+class HostRewriteEngine {
  public:
   const ReplayPlan& record(const ProgramFailureNotice& notice,
                            std::uint64_t page_size) {
-    plans_.push_back({next_id_++, notice.stripe, notice.failed_slot,
-                      notice.committed_slots, notice.failed_ppa,
-                      static_cast<std::uint64_t>(notice.committed_slots + 1) *
-                          page_size});
+    return record(notice.stripe, notice.failed_slot, notice.committed_slots,
+                  notice.failed_ppa,
+                  static_cast<std::uint64_t>(notice.committed_slots + 1) *
+                      page_size,
+                  HostRewriteReason::ProgramFailure);
     return plans_.back();
   }
   const std::vector<ReplayPlan>& plans() const { return plans_; }
@@ -124,22 +135,27 @@ class HostReplayManager {
   const ReplayPlan& record(const StripeId& stripe, std::uint32_t failed_slot,
                            std::uint32_t committed_slots,
                            const PhysicalAddr& failed_ppa,
-                           std::uint64_t replay_bytes) {
+                           std::uint64_t replay_bytes,
+                           HostRewriteReason reason =
+                               HostRewriteReason::ProgramFailure) {
     plans_.push_back({next_id_++, stripe, failed_slot, committed_slots,
-                      failed_ppa, replay_bytes});
+                      failed_ppa, replay_bytes, reason});
     return plans_.back();
   }
   std::uint64_t next_job_id() { return next_job_id_++; }
-  std::unordered_map<std::uint64_t, HostReplayJob>& jobs() { return jobs_; }
-  const std::unordered_map<std::uint64_t, HostReplayJob>& jobs() const {
+  std::unordered_map<std::uint64_t, HostRewriteJob>& jobs() { return jobs_; }
+  const std::unordered_map<std::uint64_t, HostRewriteJob>& jobs() const {
     return jobs_;
   }
 
  private:
   std::vector<ReplayPlan> plans_;
   std::uint64_t next_id_ = 0;
-  std::unordered_map<std::uint64_t, HostReplayJob> jobs_;
+  std::unordered_map<std::uint64_t, HostRewriteJob> jobs_;
   std::uint64_t next_job_id_ = 0;
 };
+
+// Compatibility alias for consumers of the v0.6 public name.
+using HostReplayManager = HostRewriteEngine;
 
 }  // namespace hbfsim

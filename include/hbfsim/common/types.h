@@ -22,6 +22,7 @@ enum class TransactionSource {
   Recovery,
   HostReplay,
   HostRefresh,
+  HostWearLevel,
 };
 enum class HostGcVictimPolicy { InvalidRatio, Greedy };
 enum class BlockState { Free, Open, Closed, Erasing, Bad };

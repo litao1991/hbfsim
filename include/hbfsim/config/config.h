@@ -99,6 +99,8 @@ struct Config {
   std::uint64_t refresh_read_count_threshold = 0;
   std::uint32_t zone_count = 0;
   std::uint64_t zone_size_pages = 0;
+  std::uint64_t wear_leveling_min_user_writes = 1;
+  double wear_leveling_min_pec_delta = 0.0;
   double retry_ber_multiplier = 0.25;
   std::uint32_t ecc_correctable_bits = 0;
   std::uint32_t max_read_retries = 0;

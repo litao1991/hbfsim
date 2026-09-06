@@ -90,6 +90,15 @@ double parse_ratio(const std::string& value) {
   return parse_probability(normalized);
 }
 
+double parse_nonnegative_number(const std::string& value) {
+  std::size_t used = 0;
+  const auto normalized = detail::trim(value);
+  const auto result = std::stod(normalized, &used);
+  if (used != normalized.size() || !std::isfinite(result) || result < 0.0)
+    throw std::runtime_error("invalid non-negative number: " + value);
+  return result;
+}
+
 HostGcVictimPolicy parse_host_gc_policy(const std::string& value) {
   const auto normalized = detail::lower(detail::trim(value));
   if (normalized == "invalid_ratio" || normalized == "invalid-ratio")
@@ -171,6 +180,7 @@ std::string to_string(TransactionSource source) {
     case TransactionSource::Recovery: return "RECOVERY";
     case TransactionSource::HostReplay: return "HOST_REPLAY";
     case TransactionSource::HostRefresh: return "HOST_REFRESH";
+    case TransactionSource::HostWearLevel: return "HOST_WEAR_LEVEL";
   }
   return "UNKNOWN";
 }
@@ -357,6 +367,10 @@ Config Config::from_yaml_file(const std::string& path) {
   detail::assign_if(values, "refresh.read_count_threshold", config.refresh_read_count_threshold, integer);
   detail::assign_if(values, "zones.count", config.zone_count, integer);
   detail::assign_if(values, "zones.size_pages", config.zone_size_pages, integer);
+  detail::assign_if(values, "wear_leveling.min_user_writes",
+                    config.wear_leveling_min_user_writes, integer);
+  detail::assign_if(values, "wear_leveling.min_pec_delta",
+                    config.wear_leveling_min_pec_delta, parse_nonnegative_number);
   detail::assign_if(values, "nand.reliability.retry_ber_multiplier", config.retry_ber_multiplier, parse_probability);
   detail::assign_if(values, "nand.reliability.ecc_correctable_bits", config.ecc_correctable_bits, integer);
   detail::assign_if(values, "nand.reliability.max_read_retries", config.max_read_retries, integer);
@@ -521,6 +535,8 @@ void Config::validate() const {
   if ((zone_count == 0) != (zone_size_pages == 0))
     throw std::runtime_error(
         "zone_count and zone_size_pages must be configured together");
+  if (wear_leveling_min_pec_delta < 0.0)
+    throw std::runtime_error("wear_leveling.min_pec_delta must be non-negative");
   const auto max_u64 = std::numeric_limits<std::uint64_t>::max();
   if (planes_per_stack > max_u64 / blocks_per_plane ||
       planes_per_stack * blocks_per_plane > max_u64 / pages_per_block)
