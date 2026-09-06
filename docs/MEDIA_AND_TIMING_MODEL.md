@@ -52,7 +52,7 @@ FREE → OPEN → CLOSED → ERASING → FREE
 | `valid_pages` | 有效 Page 数 |
 | `invalid_pages` | 被覆盖失效的 Page 数 |
 | `erase_count` | 擦除次数 |
-| `last_program_time` | 最近 Program 完成时间 |
+| `last_program_time` | Block 内最后一次成功 Program 完成时间；用于默认的 Block-level retention 近似 |
 | `last_refresh_time` | 最近 Refresh 完成时间 |
 | `ready_at` | Block 可接受相关命令的最早时间 |
 | `bad` | 坏块标记 |

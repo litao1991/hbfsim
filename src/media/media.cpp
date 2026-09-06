@@ -201,10 +201,10 @@ std::uint64_t NandMediaSystem::block_read_count(
 SimTime NandMediaSystem::block_retention_age(
     const PhysicalAddr& address, SimTime now) const {
   const auto& block = plane(address).blocks.at(address.block);
-  auto since = block.last_program_time;
-  if (address.page < block.page_program_times.size())
-    since = block.page_program_times.at(address.page);
-  since = std::max(since, block.last_refresh_time);
+  // Block-level approximation: a later successful program refreshes the
+  // retention epoch for every Page in the Block. See BlockMeta for the
+  // intentionally deferred Page-level alternative.
+  const auto since = std::max(block.last_program_time, block.last_refresh_time);
   return now > since ? now - since : 0;
 }
 
@@ -284,21 +284,19 @@ void NandMediaSystem::complete_program(
   ++block.next_program_page;
   ++block.valid_pages;
   block.last_program_time = now;
-  if (block.page_program_times.empty())
-    block.page_program_times.resize(config_.pages_per_block, 0);
-  block.page_program_times.at(address.page) = now;
   if (block.next_program_page == config_.pages_per_block)
     block.state = BlockState::Closed;
 }
 
-void NandMediaSystem::fail_program(const PhysicalAddr& address, SimTime now) {
+void NandMediaSystem::fail_program(const PhysicalAddr& address, SimTime) {
   auto& block = plane(address).blocks.at(address.block);
   clear_transient_page_state(address);
   bitmap_set(block.failed_bitmap, config_.pages_per_block, address.page);
   bitmap_clear(block.valid_bitmap, address.page);
   bitmap_clear(block.invalid_bitmap, address.page);
   ++block.next_program_page;
-  block.last_program_time = now;
+  // A failed Program contains no user data and must not refresh the Block
+  // retention epoch.
   block.state = block.next_program_page == config_.pages_per_block
                     ? BlockState::Closed
                     : BlockState::Open;
@@ -315,7 +313,8 @@ std::uint32_t NandMediaSystem::complete_erase(
   block.valid_bitmap.clear();
   block.invalid_bitmap.clear();
   block.failed_bitmap.clear();
-  block.page_program_times.clear();
+  block.last_program_time = 0;
+  block.last_refresh_time = 0;
   return ++block.erase_count;
 }
 

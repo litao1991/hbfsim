@@ -48,7 +48,9 @@ int main() {
     media.complete_program(first, std::nullopt, 100);
     media.begin_program(second);
     media.complete_program(second, std::nullopt, 200);
-    CHECK(media.block_retention_age(first, 300) == 200);
+    // The default model is Block-granular: the final successful program time
+    // is shared by all Pages without allocating pages_per_block timestamps.
+    CHECK(media.block_retention_age(first, 300) == 100);
     CHECK(media.block_retention_age(second, 300) == 100);
   }
   {

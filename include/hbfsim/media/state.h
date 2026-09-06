@@ -26,10 +26,11 @@ struct BlockMeta {
   std::vector<std::uint64_t> valid_bitmap;
   std::vector<std::uint64_t> invalid_bitmap;
   std::vector<std::uint64_t> failed_bitmap;
-  // Allocated lazily when a Block receives its first Program.  The timestamp
-  // is indexed by page and prevents later programs from resetting retention
-  // age for earlier valid pages.
-  std::vector<SimTime> page_program_times;
+  // Retention is deliberately modeled at Block granularity to keep the media
+  // footprint independent of pages_per_block. last_program_time records the
+  // final successful Page program in this Block. A future opt-in Page-level
+  // model may add compact/sparse per-Page timestamps when its fidelity is
+  // required by an experiment.
 };
 
 struct DieState {
