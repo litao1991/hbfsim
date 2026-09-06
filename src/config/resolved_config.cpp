@@ -88,6 +88,10 @@ void Config::write_resolved_yaml(const std::string& path) const {
       << "\n  read_cache:\n    enabled: " << boolean(read_cache_enabled)
       << "\n    entries_per_bank: " << read_cache_entries_per_bank
       << "\n  batch_read:\n    enabled: " << boolean(batch_read_enabled)
+      << "\n    scheduling: "
+      << (simulation_profile == SimulationProfile::MediaResearch
+              ? "timer_window_research"
+              : "regular_read_boundary_spec")
       << "\n    aggregation_window_ns: " << batch_read_aggregation_window_ns
       << "\n    max_pages: " << batch_read_max_pages
       << "\n  host_driven_read_retry: "

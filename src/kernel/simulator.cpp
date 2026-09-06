@@ -54,12 +54,16 @@ void Simulator::hold_batch_read(SubRequest& subrequest, SimTime now) {
     bucket.has_address = true;
   }
   bucket.pending.push_back(subrequest.id);
+  // MediaResearch retains the v0.5 timer-window experiment.  The HBF v0.7
+  // and AI-system profiles intentionally wait for a regular-read boundary.
+  if (config_.simulation_profile != SimulationProfile::MediaResearch) return;
   if (bucket.emit_at != std::numeric_limits<SimTime>::max()) return;
   bucket.emit_at = now + config_.batch_read_aggregation_window_ns;
   schedule(bucket.emit_at, EventType::BatchReadEmit, 0, bank);
 }
 
-void Simulator::emit_batch_reads(std::uint32_t bank, SimTime now) {
+void Simulator::emit_batch_reads(std::uint32_t bank, SimTime now,
+                                 bool all_pending) {
   const auto found = batch_reads_.find(bank);
   if (found == batch_reads_.end()) return;
   auto& bucket = found->second;
@@ -71,8 +75,11 @@ void Simulator::emit_batch_reads(std::uint32_t bank, SimTime now) {
   const auto address = subrequests_.at(first_id).paddr;
   auto& sense = system_.media().sense_queue(address);
   const bool idle = sense.empty();
-  const auto count = std::min<std::size_t>(
-      bucket.pending.size(), config_.batch_read_max_pages);
+  const auto count = all_pending
+                         ? bucket.pending.size()
+                         : std::min<std::size_t>(
+                               bucket.pending.size(),
+                               config_.batch_read_max_pages);
   SimTime accumulated_delay = 0;
   for (std::size_t page = 0; page < count; ++page) {
     const auto id = bucket.pending.front();
@@ -84,9 +91,21 @@ void Simulator::emit_batch_reads(std::uint32_t bank, SimTime now) {
   if (is_measured(subrequests_.at(first_id).parent_id))
     stats_.record_batch_read(count, accumulated_delay);
   if (idle) release_next_batch_read(bank, now);
-  if (!bucket.pending.empty()) {
+  if (!all_pending && !bucket.pending.empty()) {
     bucket.emit_at = now + config_.batch_read_aggregation_window_ns;
     schedule(bucket.emit_at, EventType::BatchReadEmit, 0, bank);
+  }
+}
+
+void Simulator::flush_spec_batch_reads(SimTime now) {
+  if (config_.simulation_profile == SimulationProfile::MediaResearch) return;
+  // A regular read is a Base-die boundary, not a per-Bank boundary.  Each
+  // bucket is enqueued independently so BankSenseQueue continues to enforce
+  // strict order only where the specification requires it: within a Bank.
+  for (auto& [bank, bucket] : batch_reads_) {
+    if (bucket.pending.empty()) continue;
+    bucket.emit_at = now;
+    emit_batch_reads(bank, now, true);
   }
 }
 
@@ -281,6 +300,13 @@ LinkResource::Reservation Simulator::reserve_fabric(
 
 void Simulator::split_request(Request& request) {
   const auto first_lpn = request.logical_addr / config_.page_size;
+  // OCP HBF v0.7 §5.3.2.2: do not await a timer for a Batch Read.  A following
+  // Regular Read marks the end of the accumulated batch and releases it.
+  // This happens at command admission, before the regular read may take a
+  // cache-hit fast path and therefore never create a SubRequest.
+  if (config_.simulation_profile != SimulationProfile::MediaResearch &&
+      request.op == OpType::Read && request.read_type == ReadType::Single)
+    flush_spec_batch_reads(now_);
   if (request.op == OpType::Invalidate) {
     const auto page_count = request.size / config_.page_size;
     for (std::uint64_t page = 0; page < page_count; ++page)

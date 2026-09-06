@@ -75,7 +75,12 @@ class Simulator {
   void dispatch_stack(std::uint32_t stack, SimTime now);
   void schedule_dispatch_wake(std::uint32_t stack, SimTime when);
   void hold_batch_read(SubRequest& subrequest, SimTime now);
-  void emit_batch_reads(std::uint32_t bank, SimTime now);
+  void emit_batch_reads(std::uint32_t bank, SimTime now,
+                        bool all_pending = false);
+  // HBF v0.7 Batch Read is delimited by the next regular read command.  The
+  // delimiter belongs to the Base die, so it flushes every Bank bucket; each
+  // Bank still preserves its own ordered Sense queue.
+  void flush_spec_batch_reads(SimTime now);
   void release_next_batch_read(std::uint32_t bank, SimTime now);
   void complete_batch_sense(SubRequest& subrequest, SimTime now);
   std::optional<std::uint64_t> choose_next(

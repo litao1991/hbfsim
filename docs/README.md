@@ -29,6 +29,7 @@
 - [V0.4.3_MEDIA_CONTROLLER_BOUNDARY.md](V0.4.3_MEDIA_CONTROLLER_BOUNDARY.md)：Plane media/controller 状态拆分与 NAND 状态转换边界。
 - [V0.5.0_BATCH_READ_FOUNDATION.md](V0.5.0_BATCH_READ_FOUNDATION.md)：ReadType、Bank Sense queue 与 Batch Read 资源域。
 - [V0.5.1_BATCH_READ_PROTOCOL.md](V0.5.1_BATCH_READ_PROTOCOL.md)：Batch hint、聚合窗口、边界、批量发射与统计。
+- [V0.7.4_BATCH_READ_COMPLIANCE.md](V0.7.4_BATCH_READ_COMPLIANCE.md)：Spec/Research 两条 Batch 调度路径与 Regular Read boundary 合规语义。
 - [V0.5.2_HOST_DRIVEN_RETRY.md](V0.5.2_HOST_DRIVEN_RETRY.md)：UECC retry stage、Host 重发与 research compatibility。
 - [V0.5.3_BLOCK_REPLAY.md](V0.5.3_BLOCK_REPLAY.md)：Host-facing ReplayPlan 与 Program Failure 元数据。
 - [V0.5.4_RELIABILITY_V2.md](V0.5.4_RELIABILITY_V2.md)：Read Disturb、Retention Age 与可靠性 Refresh。

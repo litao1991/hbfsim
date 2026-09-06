@@ -407,9 +407,11 @@ void Config::validate() const {
       host_bw_bytes_per_ns <= 0.0 || internal_bw_bytes_per_ns <= 0.0 ||
       internal_port_bw_bytes_per_ns <= 0.0)
     throw std::runtime_error("invalid zero-valued HBF topology or link");
-  if (batch_read_enabled && batch_read_aggregation_window_ns == 0)
+  if (batch_read_enabled &&
+      simulation_profile == SimulationProfile::MediaResearch &&
+      batch_read_aggregation_window_ns == 0)
     throw std::runtime_error(
-        "enabled batch reads require a non-zero aggregation window");
+        "MediaResearch batch reads require a non-zero aggregation window");
   if (copy_max_inflight_reads == 0 || copy_max_inflight_programs == 0 ||
       copy_prefetch_window_pages == 0 || copy_buffer_size < page_size)
     throw std::runtime_error(

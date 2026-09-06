@@ -7,7 +7,8 @@ namespace {
 
 hbfsim::Config config_for_batch_read() {
   using namespace hbfsim;
-  auto config = Config::for_profile(SimulationProfile::HbfV07);
+  auto config = Config::for_profile(SimulationProfile::MediaResearch);
+  config.mapping_policy = MappingPolicy::Linear;
   config.stacks = 1;
   config.dies_per_stack = 1;
   config.planes_per_die = 2;
